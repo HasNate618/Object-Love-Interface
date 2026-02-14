@@ -1,14 +1,30 @@
 /*
- * SenseCAP Indicator - Image Display + Audio Controller
+ * SenseCAP Indicator - Animated Face + Image Display + Touch
  * Main firmware for ESP32-S3
  *
  * Receives JSON commands over CH340 UART:
- *   {"cmd":"image","len":N}   → receive N bytes JPEG → decode → display
- *   {"cmd":"clear","color":"#RRGGBB"}  → fill screen with color
- *   {"cmd":"tone","freq":F,"dur":D}    → buzzer tone via RP2040
- *   {"cmd":"melody","notes":"..."}     → melody via RP2040
- *   {"cmd":"stop"}                     → stop buzzer
- *   {"cmd":"bl","on":true/false}       → backlight control
+ *
+ *   Display modes (mutually exclusive):
+ *     {"cmd":"face","on":true/false}          → animated face mode
+ *     {"cmd":"image","len":N}                 → JPEG display (disables face)
+ *     {"cmd":"clear","color":"#RRGGBB"}       → fill screen with color
+ *
+ *   Face controls (while face mode is active):
+ *     {"cmd":"mouth","open":0.0-1.0}          → mouth openness (lip sync)
+ *     {"cmd":"love","value":0.0-1.0}          → love level → floating hearts
+ *     {"cmd":"blink"}                         → trigger a manual blink
+ *
+ *   Audio (via RP2040):
+ *     {"cmd":"tone","freq":F,"dur":D}         → buzzer tone
+ *     {"cmd":"melody","notes":"..."}          → melody
+ *     {"cmd":"stop"}                          → stop buzzer
+ *
+ *   Hardware:
+ *     {"cmd":"bl","on":true/false}            → backlight control
+ *
+ * Emits asynchronous events:
+ *     {"event":"touch","x":X,"y":Y}  → touch detected on screen
+ *     {"event":"button"}              → physical user button pressed (GPIO38)
  */
 
 #include <Arduino.h>
@@ -17,6 +33,8 @@
 #include "esp_heap_caps.h"
 #include "display.h"
 #include "pins.h"
+#include "face.h"
+#include "touch.h"
 
 // ============================================================================
 // Constants
@@ -26,6 +44,10 @@
 #define FRAME_BYTES     (LCD_H_RES * LCD_V_RES * 2)
 #define SERIAL_BAUD     921600
 #define CMD_BUF_SIZE    512
+
+// Touch debounce: ignore repeated touches for this many ms
+#define TOUCH_COOLDOWN_MS  500
+static unsigned long s_last_touch_event = 0;
 
 // ============================================================================
 // Globals (PSRAM-backed)
@@ -158,6 +180,7 @@ static void handleCommand(const char *line) {
     }
 
     if (strcmp(cmd, "image") == 0) {
+        face_set_enabled(false);  // Image mode takes over from face
         handleImage(doc["len"] | (uint32_t)0);
     }
     else if (strcmp(cmd, "clear") == 0) {
@@ -178,6 +201,25 @@ static void handleCommand(const char *line) {
     }
     else if (strcmp(cmd, "bl") == 0) {
         display_backlight(doc["on"] | true);
+        Serial.println("{\"status\":\"ok\"}");
+    }
+    // ---- Face mode commands ----
+    else if (strcmp(cmd, "face") == 0) {
+        bool on = doc["on"] | false;
+        face_set_enabled(on);
+        if (!on) display_fill(0x0000);  // Clear to black when leaving face mode
+        Serial.println("{\"status\":\"ok\"}");
+    }
+    else if (strcmp(cmd, "mouth") == 0) {
+        face_set_mouth(doc["open"] | 0.0f);
+        Serial.println("{\"status\":\"ok\"}");
+    }
+    else if (strcmp(cmd, "love") == 0) {
+        face_set_love(doc["value"] | 0.0f);
+        Serial.println("{\"status\":\"ok\"}");
+    }
+    else if (strcmp(cmd, "blink") == 0) {
+        face_blink();
         Serial.println("{\"status\":\"ok\"}");
     }
     else {
@@ -213,6 +255,19 @@ void setup() {
         return;
     }
 
+    // Initialize face renderer
+    if (!face_init()) {
+        Serial.println("{\"status\":\"warning\",\"msg\":\"face init failed (PSRAM?)\"}");
+    } else {
+        face_set_enabled(true);  // Start in face mode by default
+    }
+
+    // Initialize touch controller (FT6336U) + physical button
+    if (touch_init()) {
+        Serial.println("{\"status\":\"info\",\"msg\":\"touch ready\"}");
+    }
+    button_init();
+
     Serial.println("{\"status\":\"ready\"}");
 }
 
@@ -224,5 +279,28 @@ void loop() {
             handleCommand(line.c_str());
         }
     }
-    delay(1);
+
+    // --- Touch / button event detection ---
+    unsigned long now = millis();
+
+    // Poll capacitive touch
+    TouchPoint tp = touch_read();
+    if (tp.touched && (now - s_last_touch_event) > TOUCH_COOLDOWN_MS) {
+        s_last_touch_event = now;
+        Serial.printf("{\"event\":\"touch\",\"x\":%d,\"y\":%d}\n", tp.x, tp.y);
+        rp2040_tone(1500, 60);
+    }
+
+    // Poll physical user button (GPIO38)
+    if (button_pressed()) {
+        Serial.println("{\"event\":\"button\"}");
+        rp2040_tone(1000, 60);
+    }
+
+    // Render face animation (rate-limited internally)
+    if (face_is_enabled()) {
+        face_update();
+    } else {
+        delay(1);
+    }
 }

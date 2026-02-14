@@ -255,6 +255,9 @@ void setup() {
     M5.begin(true, false, true, false);
     Serial.println("M5.begin() done (Core1)");
 
+    // Turn off the always-on WLED / RGB lights
+    M5.Power.setPowerWLEDSet(false);
+
     // Initialize speaker for Core1
     M5.Speaker.begin();
     M5.Speaker.setVolume(255);
