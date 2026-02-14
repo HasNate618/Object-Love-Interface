@@ -198,6 +198,43 @@ class SenseCapController:
         """Fill the screen with a solid color (hex string)."""
         return self.send_cmd({"cmd": "clear", "color": color})
 
+    # ------------------------------------------------------------------
+    # Face mode commands
+    # ------------------------------------------------------------------
+
+    def face_on(self):
+        """Enable animated face mode (disables image mode)."""
+        return self.send_cmd({"cmd": "face", "on": True})
+
+    def face_off(self):
+        """Disable face mode. Returns to static display."""
+        return self.send_cmd({"cmd": "face", "on": False})
+
+    def set_mouth(self, openness):
+        """
+        Set mouth openness for lip sync.
+
+        Args:
+            openness: 0.0 (closed smile) to 1.0 (fully open).
+                      For lip sync, send rapid updates (~30/sec).
+        """
+        val = max(0.0, min(1.0, float(openness)))
+        return self.send_cmd({"cmd": "mouth", "open": val})
+
+    def set_love(self, value):
+        """
+        Set love level — controls floating hearts.
+
+        Args:
+            value: 0.0 (no hearts) to 1.0 (6 floating hearts).
+        """
+        val = max(0.0, min(1.0, float(value)))
+        return self.send_cmd({"cmd": "love", "value": val})
+
+    def blink(self):
+        """Trigger a manual eye blink."""
+        return self.send_cmd({"cmd": "blink"})
+
     def backlight(self, on=True):
         """Turn backlight on or off."""
         return self.send_cmd({"cmd": "bl", "on": on})

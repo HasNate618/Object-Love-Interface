@@ -1,0 +1,3 @@
+﻿"DisplayHeight"= 18mm
+"DisplayWidth"= 93mm
+"DisplayTall"= 97mm"boxWidth" = 25cm"boxTall" = 39cm"boxHeight" = 3cm
