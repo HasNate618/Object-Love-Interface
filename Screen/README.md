@@ -1,6 +1,6 @@
-# SenseCAP Indicator Serial Display Controller
+# SenseCAP Indicator Display + Buzzer Control
 
-Control the SenseCAP Indicator D1101 display and buzzer in real-time from a Raspberry Pi (or any host) via USB serial.
+Control the SenseCAP Indicator D1101 display and buzzer in real time from a Raspberry Pi (or any host) via USB serial.
 
 ## Architecture
 
@@ -14,9 +14,9 @@ Control the SenseCAP Indicator D1101 display and buzzer in real-time from a Rasp
 └──────────────┘                    └──────────────────────────────────────┘
 ```
 
-- **ESP32-S3**: Drives the 4" 480x480 LCD via LVGL, receives serial commands
-- **RP2040**: Controls the built-in buzzer, receives audio commands from ESP32-S3 via internal UART
-- **Python Controller**: Sends JSON commands over USB serial
+- **ESP32-S3**: Drives the 4" 480x480 LCD via direct RGB panel, decodes JPEGs
+- **RP2040**: Controls the built-in buzzer, receives commands via internal UART
+- **Python Controller**: Sends JSON commands and JPEGs over USB serial
 
 ## Project Structure
 
@@ -26,7 +26,9 @@ Screen/
 ├── rp2040_firmware/       # PlatformIO project for RP2040 (buzzer)
 ├── controller/            # Python scripts for host control
 │   ├── sensecap_controller.py   # Controller API library
-│   └── test_live_update.py      # Demo / test script
+│   ├── test_display.py          # RGB color cycle test
+│   ├── test_image.py            # JPEG test pattern
+│   └── quick_test.py            # Short smoke test
 └── README.md
 ```
 
@@ -57,35 +59,49 @@ cd Screen/controller
 pip install -r requirements.txt
 ```
 
-### 4. Run the Test Script
+### 4. Run a Test Script
 ```bash
-python test_live_update.py COM5    # Windows - use your actual port
-python test_live_update.py /dev/ttyACM0  # Linux/Pi
+python test_display.py COM6           # Windows - use your actual port
+python test_image.py /dev/ttyACM0     # Linux/Pi
 ```
 
 ## Serial Protocol
 
 Commands are JSON objects terminated by `\n`. Each command receives a JSON response.
 
-### Display Commands
+### Commands
 
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `clear` | `color` | Clear screen with background color |
-| `text` | `id, x, y, text, color, size` | Create/update text label |
-| `rect` | `id, x, y, w, h, color, radius` | Create/update rectangle |
-| `bar` | `id, x, y, w, h, value, color` | Create/update progress bar (0-100) |
-| `arc` | `id, x, y, r, start, end, color, width` | Create/update arc gauge |
-| `remove` | `id` | Remove widget by ID |
-| `bl` | `level` | Set backlight (0-100) |
-| `tone` | `freq, dur` | Play buzzer tone (Hz, ms) |
+| `image` | `len` | Start JPEG transfer (bytes). Device replies `{"status":"ready"}` before raw bytes are sent. |
+| `clear` | `color` | Fill screen with background color (hex). |
+| `tone` | `freq, dur` | Play buzzer tone (Hz, ms) via RP2040. |
+| `melody` | `notes` | Play comma-separated `freq:dur` pairs. |
+| `stop` | - | Stop buzzer. |
+| `bl` | `on` | Backlight control (true/false). |
+
+### JPEG Transfer Flow
+
+1. Send header command:
+```json
+{"cmd":"image","len":123456}
+```
+2. Wait for:
+```json
+{"status":"ready"}
+```
+3. Send raw JPEG bytes.
+4. Device responds:
+```json
+{"status":"ok"}
+```
 
 ### Example Commands
 ```json
 {"cmd":"clear","color":"#000000"}
-{"cmd":"text","id":"t1","x":100,"y":50,"text":"Hello!","color":"#FFFFFF","size":24}
-{"cmd":"bar","id":"b1","x":20,"y":200,"w":440,"h":30,"value":75,"color":"#00FF00"}
 {"cmd":"tone","freq":1000,"dur":500}
+{"cmd":"melody","notes":"440:200,554:200,659:400"}
+{"cmd":"bl","on":true}
 ```
 
 ### Response Format
@@ -97,17 +113,19 @@ Commands are JSON objects terminated by `\n`. Each command receives a JSON respo
 
 ## Pin Reference (SenseCAP Indicator D1101)
 
-### ESP32-S3 GPIOs
+### ESP32-S3 GPIOs (from official Seeed SDK)
 | Function | GPIO | Notes |
 |----------|------|-------|
-| LCD Backlight | 45 | Active HIGH, shared with RGB data after init |
-| LCD SPI CS | 15 | 3-wire SPI for ST7701S init |
-| LCD SPI SCK | 16 | 3-wire SPI clock |
-| LCD SPI SDA | 17 | Shared with LCD DE after init |
-| LCD PCLK | 9 | RGB pixel clock |
-| LCD HSYNC | 46 | Horizontal sync |
-| LCD VSYNC | 3 | Vertical sync |
-| LCD DE | 17 | Data enable |
+| I2C SDA | 39 | Shared with TCA9535 + touch |
+| I2C SCL | 40 | Shared with TCA9535 + touch |
+| LCD SPI CLK | 41 | 3-wire SPI for ST7701S init |
+| LCD SPI MOSI | 48 | 3-wire SPI for ST7701S init |
+| LCD VSYNC | 17 | RGB panel |
+| LCD HSYNC | 16 | RGB panel |
+| LCD DE | 18 | RGB panel |
+| LCD PCLK | 21 | 18 MHz pixel clock |
+| LCD Backlight | 45 | Active HIGH |
+| RGB Data D0..D15 | 15..0 | RGB565 mapping |
 | UART TX (→RP2040) | 19 | Internal UART |
 | UART RX (←RP2040) | 20 | Internal UART |
 
@@ -120,7 +138,7 @@ Commands are JSON objects terminated by `\n`. Each command receives a JSON respo
 
 ## Troubleshooting
 
-- **No display**: Check ST7701S init sequence pin definitions in `pins.h` match your hardware revision
-- **Garbled display**: Adjust RGB timing parameters in `display.cpp`
-- **No serial response**: Ensure you're connected to the ESP32-S3 COM port (not RP2040)
-- **No audio**: Flash RP2040 firmware separately; check UART wiring
+- **No display**: Verify ST7701S init and pin mapping in `pins.h`.
+- **Garbled colors**: Check RGB timing parameters in `display.cpp`.
+- **No serial response**: Ensure you are on the ESP32-S3 COM port (CH340).
+- **No buzzer**: Flash RP2040 firmware separately and confirm UART wiring.
