@@ -28,3 +28,18 @@ Thumbs.db
 image_to_voice/node_modules
 image_to_voice/service-account.json
 image_to_voice/.env
+
+
+
+# SolidWorks Temporary/Owner files (the ones created on open)
+~$*.*
+
+# SolidWorks backup and auto-save files
+*.swb
+*.bak
+*.erx
+*.tmp
+
+# SolidWorks CAM and auxiliary data
+*.sldedm
+*.sldpnt
