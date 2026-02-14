@@ -24,7 +24,8 @@
  *
  * Emits asynchronous events:
  *     {"event":"touch","x":X,"y":Y}  → touch detected on screen
- *     {"event":"button"}              → physical user button pressed (GPIO38)
+ *     {"event":"button_down"}         → physical button pressed (GPIO38)
+ *     {"event":"button_up"}           → physical button released (GPIO38)
  */
 
 #include <Arduino.h>
@@ -291,10 +292,14 @@ void loop() {
         rp2040_tone(1500, 60);
     }
 
-    // Poll physical user button (GPIO38)
-    if (button_pressed()) {
-        Serial.println("{\"event\":\"button\"}");
+    // Poll physical user button (GPIO38) — emit down/up events
+    int btn = button_edge();
+    if (btn == 1) {
+        Serial.println("{\"event\":\"button_down\"}");
         rp2040_tone(1000, 60);
+    } else if (btn == -1) {
+        Serial.println("{\"event\":\"button_up\"}");
+        rp2040_tone(800, 40);
     }
 
     // Render face animation (rate-limited internally)

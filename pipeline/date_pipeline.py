@@ -220,7 +220,7 @@ class EventSerial:
 
 def is_button_touch(event: dict, touch_anywhere: bool) -> bool:
     """Check if a touch event falls within the Date button region."""
-    if event.get("event") == "button":
+    if event.get("event") in ("button", "button_down"):
         return True  # Physical button always counts
     if event.get("event") == "touch":
         if touch_anywhere:
@@ -388,6 +388,21 @@ def run_pipeline(
     print("  Switching to face mode...")
     link.send_cmd({"cmd": "face", "on": True})
     print("  Face mode active! \u2665")
+
+    # Enter conversation loop if conversation module available
+    try:
+        from conversation import run_conversation, find_mic_device, MIC_NAME_PATTERN
+        mic_device = find_mic_device(MIC_NAME_PATTERN)
+        if mic_device is not None:
+            print(f"  Mic detected: device {mic_device}")
+        else:
+            print("  WARNING: No external mic found, using default.")
+        run_conversation(link, mic_device=mic_device)
+    except ImportError:
+        print("  conversation.py not available — skipping conversation loop.")
+    except KeyboardInterrupt:
+        print("\n  Done.")
+
     link.close()
 
 
@@ -404,6 +419,18 @@ def default_on_capture(frame_path: str):
     print(f"  [default_on_capture] Send this to your Pi or Gemini pipeline.")
 
 
+def personality_on_capture(frame_path: str, server_url: str = ""):
+    """
+    Send captured image to the Node.js server to generate personality + TTS.
+    """
+    from conversation import generate_personality
+    result = generate_personality(frame_path, server_url)
+    if result:
+        print(f"  Personality generated: {result.get('personality', {}).get('identity', {}).get('name', '?')}")
+    else:
+        print("  WARNING: Personality generation failed.")
+
+
 # ============================================================================
 # CLI Entry Point
 # ============================================================================
@@ -417,6 +444,8 @@ def main():
                         help="Camera index (-1 = auto-detect)")
     parser.add_argument("--touch-anywhere", action="store_true",
                         help="Treat any touch as a Date button press")
+    parser.add_argument("--server", default="http://localhost:3000",
+                        help="Node.js image_to_voice server URL")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -424,15 +453,20 @@ def main():
     print("=" * 50)
     print(f"  Serial port: {args.port}")
     print(f"  Camera:      {'auto' if args.camera < 0 else args.camera}")
+    print(f"  Server:      {args.server}")
     if os.environ.get("DATE_CAMERA_INDEX"):
         print(f"  DATE_CAMERA_INDEX: {os.environ.get('DATE_CAMERA_INDEX')}")
     print()
+
+    # Use personality callback if server is configured
+    def capture_cb(path):
+        personality_on_capture(path, args.server)
 
     run_pipeline(
         port=args.port,
         camera_index=args.camera,
         touch_anywhere=args.touch_anywhere,
-        on_capture=default_on_capture,
+        on_capture=capture_cb,
     )
 
 

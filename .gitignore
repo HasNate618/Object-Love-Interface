@@ -43,3 +43,7 @@ image_to_voice/.env
 # SolidWorks CAM and auxiliary data
 *.sldedm
 *.sldpnt
+
+*.jpg
+*.jpeg
+*.mp3

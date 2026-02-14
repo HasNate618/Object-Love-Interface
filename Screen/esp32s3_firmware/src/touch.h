@@ -30,3 +30,9 @@ void button_init();
 
 // Read physical button state (debounced). Returns true on press edge.
 bool button_pressed();
+
+// Returns true while button is held down (after debounce).
+bool button_held();
+
+// Button edge events: call in loop(), returns 1=just pressed, -1=just released, 0=no change
+int button_edge();

@@ -148,14 +148,26 @@ TouchPoint touch_read() {
 // ============================================================================
 
 static bool     s_btn_last = false;
+static bool     s_btn_state = false;   // debounced held state
 static uint32_t s_btn_debounce = 0;
 
 void button_init() {
     pinMode(PIN_BUTTON_USER, INPUT_PULLUP);
     s_btn_last = digitalRead(PIN_BUTTON_USER);
+    s_btn_state = !s_btn_last;  // active low
 }
 
 bool button_pressed() {
+    // Legacy: returns true on press edge only
+    int e = button_edge();
+    return e == 1;
+}
+
+bool button_held() {
+    return s_btn_state;
+}
+
+int button_edge() {
     bool level = digitalRead(PIN_BUTTON_USER);
     uint32_t now = millis();
 
@@ -163,8 +175,11 @@ bool button_pressed() {
     if (level != s_btn_last && (now - s_btn_debounce) > 50) {
         s_btn_debounce = now;
         s_btn_last = level;
-        // Active low: pressed when level goes LOW
-        if (!level) return true;
+        bool pressed = !level;  // active low
+        if (pressed != s_btn_state) {
+            s_btn_state = pressed;
+            return pressed ? 1 : -1;
+        }
     }
-    return false;
+    return 0;
 }
