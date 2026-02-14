@@ -36,12 +36,14 @@ import speech_recognition as sr
 # Reuse EventSerial from date_pipeline
 sys.path.insert(0, str(Path(__file__).parent))
 from date_pipeline import EventSerial, BAUD
+from mouth_sync import play_with_mouth_sync, wait_for_animation
 
 # ============================================================================
 # Configuration
 # ============================================================================
 
 IMAGE_TO_VOICE_URL = os.environ.get("IMAGE_TO_VOICE_URL", "http://localhost:3000")
+M5_PLAY_URL = os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", ""))
 
 # Audio recording settings (match webcam mic capabilities)
 SAMPLE_RATE = 16000
@@ -213,8 +215,8 @@ def generate_personality(image_path: str, server_url: str = "") -> dict:
 def send_user_message(text: str, server_url: str = "") -> dict:
     """
     Send user text to the Node.js /respond endpoint.
-    The server handles Gemini response + ElevenLabs TTS + robot playback.
-    Returns {response} dict.
+    The server generates a Gemini response + ElevenLabs TTS and returns
+    {response, audioUrl}. Playback is orchestrated by the caller.
     """
     url = (server_url or IMAGE_TO_VOICE_URL).rstrip("/")
 
@@ -222,7 +224,7 @@ def send_user_message(text: str, server_url: str = "") -> dict:
         resp = requests.post(
             f"{url}/respond",
             json={"input": text},
-            timeout=30,
+            timeout=60,
         )
         resp.raise_for_status()
         return resp.json()
@@ -239,20 +241,54 @@ def run_conversation(
     link: EventSerial,
     mic_device: int | None = None,
     server_url: str = "",
+    m5_play_url: str = "",
 ):
     """
-    Push-to-talk conversation loop.
+    Push-to-talk conversation loop with lip-synced mouth animation.
 
     - Hold button → record from webcam mic
-    - Release button → STT → send to /respond → TTS plays on robot
+    - Release button → STT → send to /respond → Gemini + TTS
+    - Download audio → analyse amplitude → play on M5 + animate mouth
     - Repeat until Ctrl+C
     """
     recorder = PushToTalkRecorder(device_index=mic_device)
     recording = False
+    m5_url = m5_play_url or M5_PLAY_URL or None
+    anim_thread = None  # Track current mouth animation
 
     print("\n  Conversation mode active!")
     print("  Hold the button to speak, release to send.")
+    if m5_url:
+        print(f"  M5 play URL: {m5_url}")
     print("  Press Ctrl+C to quit.\n")
+
+    def _handle_response(result):
+        """Process AI response: play audio with mouth sync."""
+        nonlocal anim_thread
+        response = result.get("response", "")
+        audio_url = result.get("audioUrl")
+
+        if response:
+            print(f"  AI: {response[:120]}")
+        else:
+            print("  (no response)")
+            return
+
+        if audio_url:
+            print(f"  Playing with mouth sync...")
+            # Stop any previous animation
+            if anim_thread and anim_thread.is_alive():
+                anim_thread.stop_event.set()
+                anim_thread.join(timeout=2)
+
+            anim_thread = play_with_mouth_sync(
+                link, audio_url, m5_url
+            )
+            # Wait for animation to complete before accepting next input
+            wait_for_animation(anim_thread, timeout=120)
+            anim_thread = None
+        else:
+            print("  (no audio URL returned)")
 
     try:
         while True:
@@ -281,18 +317,13 @@ def run_conversation(
                         continue
                     print(f"  You: {text}")
 
-                    # Send to Gemini via Node.js
+                    # Send to Gemini via Node.js (awaits TTS)
                     print("  Thinking...")
                     result = send_user_message(text, server_url)
-                    response = result.get("response", "")
-                    if response:
-                        print(f"  AI: {response[:120]}")
-                    else:
-                        print("  (no response)")
+                    _handle_response(result)
 
                     # Legacy button event support
                 elif ev.get("event") == "button":
-                    # Treat single press as a toggle if firmware hasn't been updated
                     if not recording:
                         recording = True
                         recorder.start()
@@ -313,9 +344,7 @@ def run_conversation(
                         print(f"  You: {text}")
                         print("  Thinking...")
                         result = send_user_message(text, server_url)
-                        response = result.get("response", "")
-                        if response:
-                            print(f"  AI: {response[:120]}")
+                        _handle_response(result)
 
             time.sleep(0.01)  # Small sleep to avoid busy-wait
 
@@ -344,6 +373,8 @@ def main():
                         help="List input devices and exit")
     parser.add_argument("--image", default=None,
                         help="Image path to send to /generate-personality first")
+    parser.add_argument("--m5-url", default=M5_PLAY_URL,
+                        help="M5Core1 play URL (e.g. http://<ip>:8082/play)")
     args = parser.parse_args()
 
     if args.list_mics:
@@ -368,6 +399,7 @@ def main():
     print(f"  Serial port: {args.port}")
     print(f"  Server:      {args.server}")
     print(f"  Mic device:  {mic_device or 'default'}")
+    print(f"  M5 play URL: {args.m5_url or 'NOT SET'}")
     print()
 
     # Connect to SenseCAP
@@ -379,12 +411,25 @@ def main():
         result = generate_personality(args.image, args.server)
         if not result:
             print("  Failed to generate personality. Continuing anyway...")
+        else:
+            # Play starter audio with mouth sync
+            audio_url = result.get("audioUrl")
+            if audio_url:
+                # Enable face mode before playing starter
+                link.send_cmd({"cmd": "face", "on": True})
+                print("  Face mode enabled.")
+                print("  Playing personality starter with mouth sync...")
+                anim = play_with_mouth_sync(
+                    link, audio_url, args.m5_url or None
+                )
+                wait_for_animation(anim)
 
-    # Enable face mode
+    # Enable face mode (if not already)
     link.send_cmd({"cmd": "face", "on": True})
     print("  Face mode enabled.")
 
-    run_conversation(link, mic_device=mic_device, server_url=args.server)
+    run_conversation(link, mic_device=mic_device, server_url=args.server,
+                     m5_play_url=args.m5_url)
 
     link.close()
 
