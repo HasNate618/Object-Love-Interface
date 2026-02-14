@@ -1,0 +1,25 @@
+# Build artifacts
+.venv/
+.pio/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PlatformIO
+.clang_complete
+.gcc-flags.json
