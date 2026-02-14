@@ -7,15 +7,40 @@ const cors = require("cors");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { Personality, getPersonality, setPersonality, clearPersonality } = require("./type/personality.js");
 const fs = require("fs");
+const os = require("os");
 const axios = require('axios')
 const { ElevenLabsClient, play, stream } = require('@elevenlabs/elevenlabs-js');
 const mic = require("mic");
+
+// ---------------------------------------------------------------------------
+// Auto-detect the server's LAN IP so the M5 speaker can reach audio URLs.
+// Falls back to 127.0.0.1 if no suitable interface is found.
+// ---------------------------------------------------------------------------
+function getLocalIP() {
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      // Skip loopback & non-IPv4
+      if (net.family === "IPv4" && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+  return "127.0.0.1";
+}
+
+const LOCAL_IP = process.env.HOST_IP || getLocalIP();
 
 
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const SERVER_PORT = process.env.PORT || 3000;
+const ROBOT_PLAY_URL = process.env.M5CORE2_URL;            // e.g. http://<m5_ip>:8082/play
+const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://${LOCAL_IP}:${SERVER_PORT}`;
+const DISABLE_ROBOT_TTS = process.env.DISABLE_ROBOT_TTS === "1";
 
 if (!process.env.GEMINI_API_KEY) {
   throw new Error("Missing GEMINI_API_KEY in .env file");
@@ -31,7 +56,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
   model: "gemini-2.0-flash",
   generationConfig: {
-    maxOutputTokens: 350,
+    maxOutputTokens: 1500,
   }
 });
 
@@ -199,11 +224,29 @@ Rules:
   }
 
   try {
-    return JSON.parse(text);
+    return safeParseJson(text);
   } catch (err) {
     console.error("Failed to parse Gemini JSON:", text);
     throw err;
   }
+}
+
+function safeParseJson(raw) {
+  // Extract the first JSON object block if extra text leaked in
+  let text = raw.trim();
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    text = text.slice(firstBrace, lastBrace + 1);
+  }
+
+  // Remove JS-style comments and trailing commas
+  text = text
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/,\s*([}\]])/g, "$1");
+
+  return JSON.parse(text);
 }
 
 
@@ -395,8 +438,16 @@ async function streamToBuffer(stream) {
 app.use("/tmp", express.static("./tmp"));
 
 async function playOnRobot(ttsUrl) {
+  if (DISABLE_ROBOT_TTS) {
+    console.log("Robot TTS disabled; skipping play.");
+    return;
+  }
+  if (!ROBOT_PLAY_URL) {
+    console.warn("M5CORE2_URL not set — skipping robot playback. Set M5CORE2_URL in .env");
+    return;
+  }
   try {
-    await axios.post("http://10.216.64.147:8082/play", {
+    await axios.post(ROBOT_PLAY_URL, {
       url: ttsUrl,
       format: "mp3",
     });
@@ -427,7 +478,7 @@ app.post("/tts", async (req, res) => {
     const tempFile = "./tmp/audio.mp3";
     fs.writeFileSync(tempFile, audioBuffer);
 
-    // playOnRobot(`http://10.216.64.252:3000/tmp/audio.mp3`)
+    playOnRobot(`${AUDIO_HOST_URL}/tmp/audio.mp3`)
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "TTS failed" });
@@ -454,7 +505,7 @@ async function textToSpeech(text) {
 
     console.log("PLay")
 
-    playOnRobot(`http://${process.env.LOCAL_IP}/tmp/audio.mp3`)
+    playOnRobot(`${AUDIO_HOST_URL}/tmp/audio.mp3`)
   } catch (error) {
     console.error("TTS Error:", error.response?.data || error.message);
   }
@@ -466,8 +517,12 @@ app.get("/clear", (req, res) => {
   res.json({ message: "Personality cleared" });
 });
 
-// Write return-summary which summarizes
-
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
+app.listen(SERVER_PORT, () => {
+  console.log(`\n--- image_to_voice server ---`);
+  console.log(`  Listening on       : 0.0.0.0:${SERVER_PORT}`);
+  console.log(`  Detected LAN IP    : ${LOCAL_IP}`);
+  console.log(`  Audio host URL     : ${AUDIO_HOST_URL}`);
+  console.log(`  M5Core2 play URL   : ${ROBOT_PLAY_URL || "NOT SET  (set M5CORE2_URL in .env)"}`);
+  console.log(`  Robot TTS disabled : ${DISABLE_ROBOT_TTS}`);
+  console.log(`---\n`);
 });

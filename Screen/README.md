@@ -10,7 +10,7 @@ Control the SenseCAP Indicator D1101 display and buzzer in real time from a Rasp
 │  (or PC)     │   JSON commands    │  ┌──────────┐    UART   ┌─────────┐ │
 │              │                    │  │ ESP32-S3 │◄────────►│ RP2040  │ │
 │  Python      │                    │  │ (Display)│           │ (Buzzer)│ │
-│  Controller  │                    │  └──────────┘           └─────────┘ │
+│  Controller  │                    │  └──────────┘           └─────────┘ │tt
 └──────────────┘                    └──────────────────────────────────────┘
 ```
 
