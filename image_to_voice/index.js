@@ -182,11 +182,11 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
 
 async function generatePersonality(objectName) {
   const prompt = `
-You are tasked with generating a personality for a human-robot dating simulation.
+You generate a personality for a human-robot dating simulation.
 
 Input object: "${objectName}"
 
-Return ONLY valid JSON with the following structure:
+Return ONLY valid JSON:
 
 {
   "identity": { "name": "", "archetype": "", "object_origin": "" },
@@ -198,22 +198,14 @@ Return ONLY valid JSON with the following structure:
   "negative_traits": []
 }
 
-Guidelines:
-
-1. Make the personality **realistic and multidimensional**—include strengths and weaknesses.  
-2. Include **2-4 negative traits** that make the character feel believable (e.g., impatient, stubborn, shy, insecure).  
-3. Tone should match the personality—energy, playfulness, and confidence should feel consistent with the archetype.  
-4. Keep descriptions concise—2-3 sentences max per field if necessary.  
-5. Conversation style should reflect how this personality naturally communicates.  
-6. Behavioral rules should represent how this character acts in social/dating contexts.  
-7. Dating traits should include dealbreakers that are reasonable and consistent with the personality.  
-8. Output must be **strictly valid JSON**—do not add any extra commentary or explanation.  
-9. Do NOT use emojis or long paragraphs.  
-10. If appropriate, include one short follow-up question this character might ask when meeting a user.
-
-Example of a negative trait: "Can be overly cautious about new experiences."  
-`
-
+Rules:
+- Keep responses under 2-3 sentences
+- No emoji output
+- Sound natural and conversational
+- Do NOT write long paragraphs
+- If appropriate, ask one short follow-up question
+- Stay fully in character
+`;
 
   const result = await model.generateContent(prompt);
 
