@@ -123,6 +123,7 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
     console.log(personality)
 
     fs.writeFileSync("personality.json", JSON.stringify(personality));
+    fs.writeFileSync("interest.json", JSON.stringify({ interest: 5 }))
 
 
     const starterPrompt = `
@@ -260,31 +261,99 @@ app.post("/respond", async (req, res) => {
       return res.status(400).json({ error: "No personality available" });
     }
 
+    if(!fs.existsSync("interest.json")) {
+      return res.status(400).json({ error: "No interest available" });
+    }
+
     personality = JSON.parse(fs.readFileSync("personality.json"));
+    interest = JSON.parse(fs.readFileSync("interest.json")).ineterst;
   } catch (err) {
     return res.status(500).json({ error: "Failed to load personality" });
   }
 
   try {
     const prompt = `
-You are roleplaying with this personality:
+      You are roleplaying with this personality:
 
-${JSON.stringify(personality, null, 2)}
+      ${JSON.stringify(personality, null, 2)}
 
-Stay fully in character.
+      Current interest level (0-10): ${interest}
 
-User input: "${userInput}"
-`;
+      User input: "${userInput}"
+
+      Stay fully in character.
+
+      TASK 1 — Update Interest:
+      Evaluate the user's input using these rules:
+
+      - If input aligns with your values → +0.5
+      - If input matches your flirting_style → +0.5
+      - If input shows curiosity or emotional awareness → +0.3
+      - If input violates a dealbreaker → -0.5
+      - If input triggers a negative trait → -0.3
+      - Otherwise → 0
+
+      Adjust the current interest level slightly based on the above.
+      Clamp the final value between 0 and 10.
+
+      TASK 2 — Generate Response:
+      Generate a short reply (1-2 sentences max) that reflects:
+      - Your personality
+      - Your flirting_style
+      - Your updated interest level
+
+      Interest behavior guide:
+      0-2 → distant, guarded
+      3-5 → polite, neutral
+      6-8 → warm, engaged
+      9-10 → highly engaged, flirtatious
+
+      Return ONLY valid JSON in this exact format:
+
+      {
+        "interest": number,
+        "response": string
+      }
+    `;
+
 
     const result = await model.generateContent(prompt);
 
-    const responseText =
-      result.response.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "No response";
+    const rawText =
+      result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
 
-    res.json({ response: responseText });
+    // Remove markdown code blocks if present
+    const cleanedText = rawText
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
 
-    textToSpeech(responseText);
+    let parsed;
+
+    try {
+      parsed = JSON.parse(cleanedText);
+    } catch (err) {
+      console.error("Failed to parse Gemini JSON:", rawText);
+      parsed = {
+        interest: interest,
+        response: "Sorry, I got distracted for a second."
+      };
+    }
+
+
+    // Update interest safely
+    interest = Math.max(0, Math.min(10, parsed.interest));
+
+    // Send clean response
+    res.json({
+      response: parsed.response,
+      interest: interest
+    });
+
+    // TTS only speaks the response text
+    textToSpeech(parsed.response);
+    fs.writeFileSync("interest.json", JSON.stringify({ interest }));
+
   } catch (err) {
     console.error("Error generating response:", err);
     res.status(500).json({ error: "Failed to generate response" });
@@ -358,7 +427,7 @@ app.post("/tts", async (req, res) => {
     const tempFile = "./tmp/audio.mp3";
     fs.writeFileSync(tempFile, audioBuffer);
 
-    playOnRobot(`http://10.216.64.252:3000/tmp/audio.mp3`)
+    // playOnRobot(`http://10.216.64.252:3000/tmp/audio.mp3`)
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "TTS failed" });
@@ -385,7 +454,7 @@ async function textToSpeech(text) {
 
     console.log("PLay")
 
-    playOnRobot(`http://10.216.64.252:3000/tmp/audio.mp3`)
+    playOnRobot(`http://${process.env.LOCAL_IP}/tmp/audio.mp3`)
   } catch (error) {
     console.error("TTS Error:", error.response?.data || error.message);
   }
@@ -396,6 +465,8 @@ app.get("/clear", (req, res) => {
   clearPersonality(); // Modifty for proper removal
   res.json({ message: "Personality cleared" });
 });
+
+// Write return-summary which summarizes
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
