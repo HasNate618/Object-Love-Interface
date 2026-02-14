@@ -166,6 +166,7 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
     console.log(personality)
 
     fs.writeFileSync("personality.json", JSON.stringify(personality));
+    fs.writeFileSync("interest.json", JSON.stringify({ interest: 5 }))
 
 
     const starterPrompt = `
@@ -322,27 +323,66 @@ app.post("/respond", async (req, res) => {
       return res.status(400).json({ error: "No personality available" });
     }
 
+    if(!fs.existsSync("interest.json")) {
+      return res.status(400).json({ error: "No interest available" });
+    }
+
     personality = JSON.parse(fs.readFileSync("personality.json"));
+    interest = JSON.parse(fs.readFileSync("interest.json")).ineterst;
   } catch (err) {
     return res.status(500).json({ error: "Failed to load personality" });
   }
 
   try {
     const prompt = `
-You are roleplaying with this personality:
+      You are roleplaying with this personality:
 
-${JSON.stringify(personality, null, 2)}
+      ${JSON.stringify(personality, null, 2)}
 
-Stay fully in character.
+      Current interest level (0-10): ${interest}
 
-User input: "${userInput}"
-`;
+      User input: "${userInput}"
+
+      Stay fully in character.
+
+      TASK 1 — Update Interest:
+      Evaluate the user's input using these rules:
+
+      - If input aligns with your values → +0.5
+      - If input matches your flirting_style → +0.5
+      - If input shows curiosity or emotional awareness → +0.3
+      - If input violates a dealbreaker → -0.5
+      - If input triggers a negative trait → -0.3
+      - Otherwise → 0
+
+      Adjust the current interest level slightly based on the above.
+      Clamp the final value between 0 and 10.
+
+      TASK 2 — Generate Response:
+      Generate a short reply (1-2 sentences max) that reflects:
+      - Your personality
+      - Your flirting_style
+      - Your updated interest level
+
+      Interest behavior guide:
+      0-2 → distant, guarded
+      3-5 → polite, neutral
+      6-8 → warm, engaged
+      9-10 → highly engaged, flirtatious
+
+      Return ONLY valid JSON in this exact format:
+
+      {
+        "interest": number,
+        "response": string
+      }
+    `;
+
 
     const result = await model.generateContent(prompt);
 
-    const responseText =
-      result.response.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "No response";
+    const rawText =
+      result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
 
     // Await TTS and return audio URL — Python orchestrates playback + mouth sync
     const audioUrl = await textToSpeech(responseText);
