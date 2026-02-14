@@ -1,0 +1,11 @@
+{
+    "watch": [
+        "index.js",
+        "type"
+    ],
+    "ignore": [
+        "tmp/*",
+        "personality.json",
+        "voice.json"
+    ]
+}
