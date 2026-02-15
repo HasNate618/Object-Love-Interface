@@ -276,6 +276,7 @@ def run_pipeline(
     m5_url: str | None = None,
     server_url: str | None = None,
     wifi_host: str | None = None,
+    servo_port: str | None = None,
 ):
     """
     Main pipeline loop.
@@ -428,6 +429,15 @@ def run_pipeline(
     link.send_cmd({"cmd": "face", "on": True})
     print("  Face mode active! \u2665")
 
+    # Set initial love value from personality response (interest starts at 5)
+    initial_interest = capture_result.get("interest", 5) if isinstance(capture_result, dict) else 5
+    initial_love = max(0.0, min(1.0, initial_interest / 10.0))
+    try:
+        link.send_cmd({"cmd": "love", "value": initial_love})
+        print(f"  [love] Initial interest={initial_interest} → love={initial_love:.2f}")
+    except Exception as e:
+        print(f"  [love] Initial screen update failed: {e}")
+
     # Play personality starter audio with mouth sync
     audio_url = capture_result.get("audioUrl") if isinstance(capture_result, dict) else None
     if audio_url:
@@ -442,6 +452,15 @@ def run_pipeline(
             print(f"  Mouth sync error: {e}")
 
     # Enter conversation loop if conversation module available
+    servo = None
+    try:
+        if servo_port:
+            from servo_serial import ServoSerial
+            servo = ServoSerial(servo_port)
+    except Exception as e:
+        print(f"  WARNING: Could not open servo on {servo_port}: {e}")
+        servo = None
+
     try:
         from conversation import run_conversation, find_mic_device, MIC_NAME_PATTERN
         mic_device = find_mic_device(MIC_NAME_PATTERN)
@@ -452,11 +471,14 @@ def run_pipeline(
         # Use passed m5_url or fall back to env vars
         final_m5_url = m5_url or os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", ""))
         final_server_url = server_url or "http://localhost:3000"
-        run_conversation(link, mic_device=mic_device, m5_play_url=final_m5_url, server_url=final_server_url)
+        run_conversation(link, mic_device=mic_device, m5_play_url=final_m5_url, server_url=final_server_url, servo=servo)
     except ImportError:
         print("  conversation.py not available — skipping conversation loop.")
     except KeyboardInterrupt:
         print("\n  Done.")
+
+    if servo:
+        servo.close()
 
     link.close()
 
@@ -507,6 +529,8 @@ def main():
                         help="Node.js image_to_voice server URL")
     parser.add_argument("--m5-url", dest="m5_url", default="",
                         help="M5Core1 play endpoint (e.g. http://IP:8082/play)")
+    parser.add_argument("--servo-port", dest="servo_port", default=None,
+                        help="Serial port for the ESP32 servo controller (e.g. /dev/ttyUSB0 or COM7)")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -544,6 +568,7 @@ def main():
         m5_url=args.m5_url or None,
         server_url=args.server,
         wifi_host=args.wifi,
+        servo_port=args.servo_port,
     )
 
 

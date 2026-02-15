@@ -199,6 +199,7 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
       personality,
       starter: starterText,
       audioUrl: audioUrl || null,
+      interest: 5,
     });
 
   } catch (err) {
@@ -419,7 +420,7 @@ app.post("/respond", async (req, res) => {
     // Await TTS and return audio URL — Python orchestrates playback + mouth sync
     const audioUrl = await textToSpeech(responseText);
 
-    res.json({ response: responseText, audioUrl: audioUrl || null });
+    res.json({ response: responseText, audioUrl: audioUrl || null, interest: updatedInterest });
   } catch (err) {
     console.error("Error generating response:", err);
     res.status(500).json({ error: "Failed to generate response" });

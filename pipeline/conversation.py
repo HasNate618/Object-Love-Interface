@@ -52,7 +52,7 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16  # 16-bit PCM
 
 # Mic device name pattern to auto-detect external webcam mic
-MIC_NAME_PATTERN = os.environ.get("MIC_NAME", "Brio")
+MIC_NAME_PATTERN = os.environ.get("MIC_NAME", "Wireless")
 
 
 # ============================================================================
@@ -242,14 +242,19 @@ def run_conversation(
     mic_device: int | None = None,
     server_url: str = "",
     m5_play_url: str = "",
+    servo=None,
 ):
     """
     Push-to-talk conversation loop with lip-synced mouth animation.
 
     - Hold button → record from webcam mic
-    - Release button → STT → send to /respond → Gemini + TTS
+    - Release button → STT → send to /respond → Gemini response + TTS
     - Download audio → analyse amplitude → play on M5 + animate mouth
+    - Update love value on SenseCAP screen + servo angle
     - Repeat until Ctrl+C
+
+    Args:
+        servo: Optional ServoSerial instance for the arm ESP32.
     """
     recorder = PushToTalkRecorder(device_index=mic_device)
     recording = False
@@ -263,10 +268,27 @@ def run_conversation(
     print("  Press Ctrl+C to quit.\n")
 
     def _handle_response(result):
-        """Process AI response: play audio with mouth sync."""
+        """Process AI response: update love/servo, play audio with mouth sync."""
         nonlocal anim_thread
         response = result.get("response", "")
         audio_url = result.get("audioUrl")
+        interest = result.get("interest")
+
+        # --- Update love value on screen + servo angle ---
+        if interest is not None:
+            try:
+                love = interest / 10.0
+                love = max(0.0, min(1.0, love))
+                link.send_cmd({"cmd": "love", "value": love})
+                print(f"  [love] interest={interest} → love={love:.2f}")
+            except Exception as e:
+                print(f"  [love] Screen update failed: {e}")
+
+            if servo:
+                try:
+                    servo.set_interest(interest)
+                except Exception as e:
+                    print(f"  [servo] Update failed: {e}")
 
         if response:
             print(f"  AI: {response[:120]}")
