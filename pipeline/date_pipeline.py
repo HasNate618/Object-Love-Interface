@@ -457,6 +457,8 @@ def run_pipeline(
         if servo_port:
             from servo_serial import ServoSerial
             servo = ServoSerial(servo_port)
+            # Explicitly reset servo angle to neutral position on startup
+            servo.send_servo(135)
         else:
             print("  [servo] Not configured (no --servo-port)")
     except Exception as e:
