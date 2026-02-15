@@ -63,6 +63,31 @@ MAX_OPEN = 1.0
 SILENCE_THRESHOLD = 0.02
 
 
+def _get_lan_ip() -> str:
+    """Return this machine's LAN IP address (best-effort)."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _rewrite_url_for_m5(audio_url: str) -> str:
+    """Replace localhost / 127.0.0.1 with this machine's LAN IP so the M5
+    (a separate device on the network) can reach the audio server."""
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(audio_url)
+    if parsed.hostname in ("localhost", "127.0.0.1"):
+        lan_ip = _get_lan_ip()
+        new_netloc = parsed.netloc.replace(parsed.hostname, lan_ip)
+        audio_url = urlunparse(parsed._replace(netloc=new_netloc))
+    return audio_url
+
+
 # ============================================================================
 # Audio Analysis
 # ============================================================================
@@ -169,8 +194,13 @@ def _send_mouth(link: "EventSerial", openness: float):
     cmd = json.dumps({"cmd": "mouth", "open": round(openness, 2)},
                      separators=(",", ":")) + "\n"
     try:
-        link.ser.write(cmd.encode("utf-8"))
-        link.ser.flush()
+        if hasattr(link, "send_raw_line"):
+            link.send_raw_line(cmd)
+        elif hasattr(link, "ser"):
+            link.ser.write(cmd.encode("utf-8"))
+            link.ser.flush()
+        else:
+            link.send_cmd({"cmd": "mouth", "open": round(openness, 2)})
     except Exception:
         pass  # Serial glitches shouldn't crash the animation
 
@@ -266,10 +296,11 @@ def play_with_mouth_sync(
     # 3. Tell M5Core1 to play
     if m5_play_url:
         try:
+            m5_audio_url = _rewrite_url_for_m5(audio_url)
             print(f"  [mouth_sync] Sending play command to: {m5_play_url}")
-            print(f"  [mouth_sync] Audio URL: {audio_url}")
+            print(f"  [mouth_sync] Audio URL for M5: {m5_audio_url}")
             resp = requests.post(m5_play_url, json={
-                "url": audio_url,
+                "url": m5_audio_url,
                 "format": "mp3",
             }, timeout=5)
             print(f"  [mouth_sync] M5 response status: {resp.status_code}")

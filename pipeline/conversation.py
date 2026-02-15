@@ -363,6 +363,8 @@ def main():
         description="Push-to-Talk Conversation via SenseCAP button + webcam mic"
     )
     parser.add_argument("--port", default="COM6", help="SenseCAP serial port")
+    parser.add_argument("--wifi", default=None, metavar="HOST",
+                        help="Connect via WiFi TCP instead of serial (IP or hostname)")
     parser.add_argument("--server", default=IMAGE_TO_VOICE_URL,
                         help="Node.js image_to_voice server URL")
     parser.add_argument("--mic", type=int, default=None,
@@ -403,8 +405,14 @@ def main():
     print()
 
     # Connect to SenseCAP
-    link = EventSerial(args.port)
-    link.drain_boot(1.0)
+    if args.wifi:
+        from wifi_link import WiFiLink
+        print(f"  Connecting via WiFi to {args.wifi}...")
+        link = WiFiLink(args.wifi)
+        link.drain_boot(1.0)
+    else:
+        link = EventSerial(args.port)
+        link.drain_boot(1.0)
 
     # Optionally generate personality from image first
     if args.image:

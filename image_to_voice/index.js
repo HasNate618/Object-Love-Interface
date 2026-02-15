@@ -40,7 +40,7 @@ function getLocalIP() {
 const LOCAL_IP = process.env.HOST_IP || getLocalIP();
 const SERVER_PORT = process.env.PORT || 3000;
 const ROBOT_PLAY_URL = process.env.M5CORE2_URL;            // e.g. http://<m5_ip>:8082/play
-const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://${LOCAL_IP}:${SERVER_PORT}`;
+const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://localhost:${SERVER_PORT}`;
 const DISABLE_ROBOT_TTS = process.env.DISABLE_ROBOT_TTS === "1";
 
 if (!process.env.GEMINI_API_KEY) {
@@ -289,20 +289,29 @@ app.post("/respond", async (req, res) => {
 
     const result = await model.generateContent(prompt);
 
-    const parsed = extractAndParseJSON(result);
+    const rawText =
+      result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
 
-    if (!parsed) {
-      return res.status(500).json({ error: "Failed to parse Gemini JSON" });
+    let parsed = {};
+    try {
+      parsed = safeParseJson(rawText);
+    } catch (parseErr) {
+      console.warn("Failed to parse response JSON, using fallback:", rawText);
     }
 
-    // Save updated interest
-    saveInterest(parsed.interest);
+    const updatedInterest =
+      typeof parsed.interest === "number" ? parsed.interest : interest;
+    const responseText =
+      typeof parsed.response === "string" ? parsed.response : "No response";
 
-    // Save turn to context
-    addTurn(userInput, parsed.response, parsed.interest);
+    try {
+      fs.writeFileSync("interest.json", JSON.stringify({ interest: updatedInterest }));
+    } catch (writeErr) {
+      console.warn("Failed to update interest.json:", writeErr);
+    }
 
-    // Generate TTS only from response text
-    // audioUrl = await textToSpeech(parsed.response);
+    // Await TTS and return audio URL — Python orchestrates playback + mouth sync
+    const audioUrl = await textToSpeech(responseText);
 
     res.json({
       response: parsed.response,
