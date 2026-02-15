@@ -328,7 +328,7 @@ app.post("/respond", async (req, res) => {
     }
 
     personality = JSON.parse(fs.readFileSync("personality.json"));
-    interest = JSON.parse(fs.readFileSync("interest.json")).ineterst;
+    interest = JSON.parse(fs.readFileSync("interest.json")).interest;
   } catch (err) {
     return res.status(500).json({ error: "Failed to load personality" });
   }
@@ -383,6 +383,24 @@ app.post("/respond", async (req, res) => {
 
     const rawText =
       result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
+
+    let parsed = {};
+    try {
+      parsed = safeParseJson(rawText);
+    } catch (parseErr) {
+      console.warn("Failed to parse response JSON, using fallback:", rawText);
+    }
+
+    const updatedInterest =
+      typeof parsed.interest === "number" ? parsed.interest : interest;
+    const responseText =
+      typeof parsed.response === "string" ? parsed.response : "No response";
+
+    try {
+      fs.writeFileSync("interest.json", JSON.stringify({ interest: updatedInterest }));
+    } catch (writeErr) {
+      console.warn("Failed to update interest.json:", writeErr);
+    }
 
     // Await TTS and return audio URL — Python orchestrates playback + mouth sync
     const audioUrl = await textToSpeech(responseText);

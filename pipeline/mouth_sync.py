@@ -169,8 +169,13 @@ def _send_mouth(link: "EventSerial", openness: float):
     cmd = json.dumps({"cmd": "mouth", "open": round(openness, 2)},
                      separators=(",", ":")) + "\n"
     try:
-        link.ser.write(cmd.encode("utf-8"))
-        link.ser.flush()
+        if hasattr(link, "send_raw_line"):
+            link.send_raw_line(cmd)
+        elif hasattr(link, "ser"):
+            link.ser.write(cmd.encode("utf-8"))
+            link.ser.flush()
+        else:
+            link.send_cmd({"cmd": "mouth", "open": round(openness, 2)})
     except Exception:
         pass  # Serial glitches shouldn't crash the animation
 

@@ -240,14 +240,18 @@ def is_button_touch(event: dict, touch_anywhere: bool) -> bool:
 def probe_cameras(max_index: int = 6) -> list[tuple[int, int, int]]:
     """Probe camera indices and return list of (index, width, height)."""
     results: list[tuple[int, int, int]] = []
+    seen: set[int] = set()
+    backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF]
     for idx in range(max_index):
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                h, w = frame.shape[:2]
-                results.append((idx, w, h))
-        cap.release()
+        for backend in backends:
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None and idx not in seen:
+                    h, w = frame.shape[:2]
+                    results.append((idx, w, h))
+                    seen.add(idx)
+            cap.release()
     return results
 
 
@@ -310,6 +314,8 @@ def run_pipeline(
             camera_index = auto_select_camera()
     print(f"Opening camera index {camera_index}...")
     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_MSMF)
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera {camera_index}")
         link.close()

@@ -105,6 +105,12 @@ class WiFiLink:
         # Wait for "ok"
         return self._read_until_status(timeout=10)
 
+    def send_raw_line(self, line: str):
+        """Send a raw line without waiting for a response (fire-and-forget)."""
+        if not line.endswith("\n"):
+            line += "\n"
+        self._send_all(line.encode("utf-8"))
+
     def collect_events(self) -> list[dict]:
         """Read any buffered data and return collected events."""
         self._drain_lines()
