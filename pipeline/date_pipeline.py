@@ -311,14 +311,14 @@ def run_pipeline(
     if limit_switch_gpio is not None and limit_switch_gpio >= 0:
         try:
             from gpio_button import GpioLimitSwitch
-            limit_switch = GpioLimitSwitch(limit_switch_gpio)
-            print(f"  [limit_switch] GPIO enabled on GPIO{limit_switch_gpio} (async)")
+            limit_switch = GpioLimitSwitch(
+                limit_switch_gpio,
+                on_close=lambda: print("  [limit_switch] >>> CLOSED — switch engaged"),
+                on_open=lambda: print("  [limit_switch] >>> OPEN — switch released"),
+            )
+            print(f"  [limit_switch] Async GPIO enabled on GPIO{limit_switch_gpio}")
         except Exception as e:
             print(f"  [limit_switch] GPIO disabled: {e}")
-
-    def check_limit_switch() -> dict | None:
-        """Non-blocking check for queued limit switch state changes."""
-        return limit_switch.consume_state_change() if limit_switch else None
 
     if wifi_host:
         from wifi_link import WiFiLink
@@ -391,11 +391,6 @@ def run_pipeline(
                 if limit_switch:
                     limit_switch.close()
                 return True
-
-            # Check limit switch state
-            switch_state = check_limit_switch()
-            if switch_state:
-                print(f"  [limit_switch] Switch {switch_state['state_name']}")
 
             # 1. Capture webcam frame
             ret, cv_frame = cap.read()

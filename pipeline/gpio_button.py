@@ -14,8 +14,6 @@ Wiring:
 
 from __future__ import annotations
 import time
-import threading
-from collections import deque
 
 try:
     from gpiozero import Button
@@ -54,146 +52,89 @@ class GpioResetButton:
 
 
 class GpioLimitSwitch:
-    """
-    Monitor a GPIO limit switch state in a background thread (async/independent).
-    
-    Runs continuously in a separate thread without blocking the main pipeline.
-    State changes are queued and can be polled non-blockingly.
+    """Monitor a GPIO limit switch using interrupt-based edge detection.
+
+    Runs independently of the main loop — RPi.GPIO fires a callback on
+    a background thread whenever the switch opens or closes.
     """
 
-    def __init__(self, pin: int = 17, debounce_delay: float = 0.1, 
-                 on_opened=None, on_closed=None):
+    def __init__(
+        self,
+        pin: int = 17,
+        bounce_time_ms: int = 200,
+        on_open=None,
+        on_close=None,
+    ):
         """
-        Initialize limit switch monitoring with background thread.
-        
         Args:
-            pin: GPIO pin number (BCM mode)
-            debounce_delay: Debounce delay in seconds
-            on_opened: Optional callback(timestamp) when switch opens
-            on_closed: Optional callback(timestamp) when switch closes
-        
-        Raises:
-            ImportError: If RPi.GPIO is not available
+            pin:            GPIO pin number (BCM mode).
+            bounce_time_ms: Software debounce in milliseconds.
+            on_open:        Optional callback when switch opens  (HIGH).
+            on_close:       Optional callback when switch closes (LOW).
         """
         if GPIO is None:
             raise ImportError("RPi.GPIO is required for GPIO limit switch support")
-        
+
         self.pin = pin
-        self.debounce_delay = debounce_delay
-        self.on_opened = on_opened
-        self.on_closed = on_closed
-        
-        # State tracking
-        self._current_state = None
-        self._state_change_time = None
-        self._state_queue = deque(maxlen=10)  # Keep last 10 state changes
-        self._state_lock = threading.Lock()
-        
-        # Background thread control
-        self._running = True
-        self._monitor_thread = None
-        
-        # Initialize GPIO
+        self._on_open = on_open
+        self._on_close = on_close
+        self._closed = False          # current latched state
+        self._state_changed = False   # flag for poll-style consumers
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        
-        # Read initial state
-        self._current_state = GPIO.input(self.pin)
-        
-        # Start monitoring thread
-        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._monitor_thread.start()
 
-    def _monitor_loop(self):
-        """
-        Background thread loop: continuously monitor switch and queue state changes.
-        Runs independently and doesn't block the main pipeline.
-        """
-        prev_state = self._current_state
-        debounce_start = None
-        
-        while self._running:
-            current_state = GPIO.input(self.pin)
-            current_time = time.time()
-            
-            if current_state != prev_state:
-                # Potential state change detected
-                if debounce_start is None:
-                    debounce_start = current_time
-                elif (current_time - debounce_start) >= self.debounce_delay:
-                    # State confirmed after debounce
-                    prev_state = current_state
-                    debounce_start = None
-                    
-                    # Queue the state change
-                    state_info = {
-                        'state': bool(current_state),
-                        'state_name': 'open' if current_state else 'closed',
-                        'timestamp': current_time
-                    }
-                    
-                    with self._state_lock:
-                        self._current_state = current_state
-                        self._state_queue.append(state_info)
-                    
-                    # Trigger callbacks if provided
-                    if current_state and self.on_opened:
-                        try:
-                            self.on_opened(current_time)
-                        except Exception as e:
-                            print(f"[limit_switch] on_opened callback error: {e}")
-                    elif not current_state and self.on_closed:
-                        try:
-                            self.on_closed(current_time)
-                        except Exception as e:
-                            print(f"[limit_switch] on_closed callback error: {e}")
-            else:
-                # State is stable
-                debounce_start = None
-            
-            # Polling interval (short to be responsive, but not too fast)
-            time.sleep(0.01)
+        # Read initial state (LOW = closed / pressed)
+        initial = GPIO.input(self.pin)
+        self._closed = (initial == 0)
+        print(f"  [limit_switch] Initial state: {'closed' if self._closed else 'open'}")
 
-    def get_state(self) -> bool:
-        """
-        Get current limit switch state without blocking.
-        
-        Returns:
-            True if switch is open (HIGH), False if closed (LOW)
-        """
-        with self._state_lock:
-            return bool(self._current_state)
+        # Register interrupt on both edges — runs on a background thread
+        GPIO.add_event_detect(
+            self.pin,
+            GPIO.BOTH,
+            callback=self._edge_callback,
+            bouncetime=bounce_time_ms,
+        )
 
-    def get_state_changes(self) -> list[dict]:
-        """
-        Retrieve all queued state changes since last call.
-        Non-blocking; cleared after retrieval.
-        
-        Returns:
-            List of state change dicts with 'state', 'state_name', 'timestamp'
-        """
-        with self._state_lock:
-            changes = list(self._state_queue)
-            self._state_queue.clear()
-        return changes
+    # ---- interrupt handler (runs on RPi.GPIO background thread) ----------
+    def _edge_callback(self, channel):
+        state = GPIO.input(self.pin)
+        now_closed = (state == 0)
 
-    def consume_state_change(self) -> dict | None:
-        """
-        Pop the next state change from the queue (like reset button's consume_reset).
-        Non-blocking; returns None if no changes pending.
-        
-        Returns:
-            Single state change dict or None
-        """
-        with self._state_lock:
-            if self._state_queue:
-                return self._state_queue.popleft()
-        return None
+        if now_closed == self._closed:
+            return  # duplicate after bounce filter
+
+        self._closed = now_closed
+        self._state_changed = True
+        label = "closed" if now_closed else "open"
+        ts = time.strftime("%H:%M:%S")
+        print(f"  [{ts}] [limit_switch] Switch {label}")
+
+        if now_closed and self._on_close:
+            self._on_close()
+        elif not now_closed and self._on_open:
+            self._on_open()
+
+    # ---- public API ------------------------------------------------------
+    @property
+    def is_closed(self) -> bool:
+        """True when the limit switch is currently closed (pressed)."""
+        return self._closed
+
+    @property
+    def is_open(self) -> bool:
+        """True when the limit switch is currently open (released)."""
+        return not self._closed
+
+    def consume_state_change(self) -> bool:
+        """Return True once per state change, then clear.  Poll-friendly."""
+        if self._state_changed:
+            self._state_changed = False
+            return True
+        return False
 
     def close(self):
-        """Stop monitoring thread and clean up GPIO resources."""
-        self._running = False
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self._monitor_thread.join(timeout=1.0)
-        GPIO.cleanup()
-
+        """Remove edge detection and clean up GPIO."""
+        GPIO.remove_event_detect(self.pin)
+        GPIO.cleanup(self.pin)
