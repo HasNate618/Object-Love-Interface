@@ -120,7 +120,7 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
 
       ${JSON.stringify(personality, null, 2)}
 
-      Write a very short, friendly conversation starter to begin talking with the user.
+      Write a very short, friendly conversation starter at a dinner date
       Rules:
         - Keep responses under 2 sentences
         - No emoji output
