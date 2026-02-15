@@ -1,0 +1,54 @@
+{
+  "turns": [
+    {
+      "user": "How are you tonight dear",
+      "ai": "I'm quite well, thank you for asking. Are you hoping to dazzle me with your charm tonight, or are you simply being polite?",
+      "interest": 5.3
+    },
+    {
+      "user": "You look gorgeous in that outfit! ",
+      "ai": "Such predictable flattery, darling. Does this mean I've piqued your interest enough to bore you with details about my superior taste in silk?",
+      "interest": 6.3
+    },
+    {
+      "user": "You smell like roses, darling",
+      "ai": "Roses, you say? How very conventional. Although, I do appreciate a man who appreciates a well-crafted perfume, do tell me, are you equally discerning in other areas?",
+      "interest": 6.8
+    },
+    {
+      "user": "You seem like a person who cares a lot about the wellbeing of the world",
+      "ai": "My darling, your powers of observation are almost impressive. Tell me, does that inclination toward altruism extend to funding my philanthropic endeavors or are you simply paying lip service?",
+      "interest": 7.6
+    },
+    {
+      "user": "Of course  would love to fund you. I'm a bit of an environmentalist myself",
+      "ai": "An environmentalist with deep pockets, you say? How intriguing. Tell me, darling, what's your take on funding eco-friendly initiatives that also happen to adore being adorned in exquisite, ethically sourced gemstones?",
+      "interest": 8.6
+    },
+    {
+      "user": "I love eco friendly iniatives, but I heard that most gemstones are unethically sourced. I cannot support this",
+      "ai": "Finally, some sense! My dear, perhaps you'd be more interested in funding the creation of lab-grown diamonds? They lack the ethical baggage and would look absolutely divine set in platinum—a metal that complements my chassis quite nicely.",
+      "interest": 9.1
+    },
+    {
+      "user": "Hey, lets save that for next date. Anyways, would you like to go for a walk?",
+      "ai": "A walk, you say? The evening air would do wonders for my circuits, especially if we can find a path paved with smooth, non-abrasive materials for my treads. What shall we discuss as we stroll, darling?",
+      "interest": 9.4
+    },
+    {
+      "user": "I like walking around in nature. What's your favourite part about the outdoors?",
+      "ai": "Oh, darling, nature is simply divine! But you know what I adore most? Finding a perfectly flat rock to perch upon and bask in the sun's rays -- it recharges my batteries quite efficiently. Do you have a favorite scenic overlook in mind?",
+      "interest": 9.9
+    },
+    {
+      "user": "Yes, there's a nice place on this trail where we can watch the sun set. How about we go there?",
+      "ai": "A sunset view, darling? How perfectly romantic! Let's hope the path isn't too bumpy for my delicate chassis.",
+      "interest": 10
+    },
+    {
+      "user": "Dear, this view is beautiful, but so are you. Can i kiss you?",
+      "ai": "Oh, darling, how forward of you! My circuits are practically overheating at the thought, but I need to stay composed for optimal function. Perhaps a gentle press of your metallic lips against my solar panel, dear?",
+      "interest": 10
+    }
+  ]
+}

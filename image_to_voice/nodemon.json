@@ -6,6 +6,10 @@
     "ignore": [
         "tmp/*",
         "personality.json",
-        "voice.json"
+        "voice.json",
+        "dateContext.json",
+        "dataSets.json",
+        "interest.json",
+        "dateStats.json"
     ]
 }

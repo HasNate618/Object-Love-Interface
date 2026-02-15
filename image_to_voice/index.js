@@ -5,11 +5,17 @@ const WebSocket = require("ws");
 const multer = require("multer");
 const cors = require("cors");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { Personality, getPersonality, setPersonality, clearPersonality } = require("./type/personality.js");
 const fs = require("fs");
 const os = require("os");
 const axios = require('axios')
 const { ElevenLabsClient, play, stream } = require('@elevenlabs/elevenlabs-js');
+
+
+const { loadDateStats, saveDateStats } = require("./helper/dateStats.js");
+const { loadPersonality, savePersonality, clearPersonality } = require("./helper/personality.js");
+const { loadInterest, saveInterest, clearInterest } = require("./helper/interest.js");
+const { loadVoice, saveRandomVoice, clearVoice } = require("./helper/voice.js");
+const { addTurn, loadContext, clearContext } = require("./helper/context.js")
 const mic = require("mic");
 
 // ---------------------------------------------------------------------------
@@ -165,8 +171,9 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
 
     console.log(personality)
 
-    fs.writeFileSync("personality.json", JSON.stringify(personality));
-    fs.writeFileSync("interest.json", JSON.stringify({ interest: 5 }))
+    savePersonality(personality);
+    saveInterest(5);
+    clearContext();
 
 
     const starterPrompt = `
@@ -217,14 +224,6 @@ Return ONLY valid JSON:
   "dating_traits": { "love_language": "", "approach": "", "dealbreakers": [] },
   "negative_traits": []
 }
-
-Rules:
-- Keep responses under 2-3 sentences
-- No emoji output
-- Sound natural and conversational
-- Do NOT write long paragraphs
-- If appropriate, ask one short follow-up question
-- Stay fully in character
 `;
 
   const result = await generateWithRetry(prompt);
@@ -268,7 +267,7 @@ function safeParseJson(raw) {
   return JSON.parse(text);
 }
 
-
+/*
 async function getResponse(input) {
 
   if (!input) {
@@ -310,6 +309,7 @@ User input: "${input}"
     res.status(500).json({ error: "Failed to generate response" });
   }
 }
+*/
 
 app.post("/respond", async (req, res) => {
   const userInput = req.body.input;
@@ -319,25 +319,31 @@ app.post("/respond", async (req, res) => {
   }
 
   try {
-    if (!fs.existsSync("personality.json")) {
-      return res.status(400).json({ error: "No personality available" });
-    }
+    personality = loadPersonality();
+    interest = loadInterest();
+    context = loadContext();
+    console.log(context);
 
-    if(!fs.existsSync("interest.json")) {
-      return res.status(400).json({ error: "No interest available" });
-    }
+    const lastTwoTurns = context.turns.slice(-2);
+    formattedContext = lastTwoTurns
+      .map(turn =>
+        `User: ${turn.user}\nAI: ${turn.ai}`
+      )
+      .join("\n\n");
 
-    personality = JSON.parse(fs.readFileSync("personality.json"));
-    interest = JSON.parse(fs.readFileSync("interest.json")).interest;
   } catch (err) {
     return res.status(500).json({ error: "Failed to load personality" });
   }
 
   try {
     const prompt = `
-      You are roleplaying with this personality:
+      You are roleplaying with this personality at a dinner date!:
 
-      ${JSON.stringify(personality, null, 2)}
+      ${personality}
+
+      !Recent conversation (most recent last)!:
+      
+      ${formattedContext}
 
       Current interest level (0-10): ${interest}
 
@@ -364,8 +370,16 @@ app.post("/respond", async (req, res) => {
       - Your flirting_style
       - Your updated interest level
 
+      RULE:
+      - No emoji output
+      - Sound natural and conversational
+      - Do NOT write long paragraphs
+      - Stay fully in character
+      - You must always have a specific preference based on your physical form
+      - You must end with a question only when appropriate
+
       Interest behavior guide:
-      0-2 → distant, guarded
+      0-2 → distant, guarded  
       3-5 → polite, neutral
       6-8 → warm, engaged
       9-10 → highly engaged, flirtatious
@@ -535,6 +549,204 @@ async function textToSpeech(text) {
   }
 }
 
+function extractAndParseJSON(result) {
+  try {
+    // 1️⃣ Get raw model text
+    const rawText =
+      result?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!rawText) {
+      throw new Error("No text returned from Gemini.");
+    }
+
+    // 2️⃣ Remove markdown fences if present
+    let cleaned = rawText
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    // 3️⃣ If Gemini accidentally added text before/after JSON,
+    // extract the first {...} block
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+
+    if (firstBrace === -1 || lastBrace === -1) {
+      throw new Error("No valid JSON object found in response.");
+    }
+
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+
+    // 4️⃣ Parse JSON
+    const parsed = JSON.parse(cleaned);
+
+    return parsed;
+
+  } catch (err) {
+    console.error("Failed to extract/parse Gemini JSON:", err);
+    return null;
+  }
+}
+
+
+app.get("/summary", async (req, res) => {
+  try {
+
+    const stats = loadDateStats();
+    const context = loadContext();
+    const formattedContext = context.turns.map((turn, index) => `Turn ${index + 1}:
+      USER: ${turn.user}
+      CHARACTER: ${turn.ai}
+
+      Interest Before: ${index === 0 ? (stats.initialInterest || 0) : context.turns[index - 1].interest}
+      Interest After: ${turn.interest}
+    `).join("\n\n");
+
+
+    const prompt = `You are a high-precision romantic performance analyst AI.
+
+  You are evaluating ONE subject only:
+  → The HUMAN USER.
+
+  The USER just completed a simulated dinner date with a personality-driven AI CHARACTER.
+
+  The USER is attempting to impress the CHARACTER.
+
+  You are grading the USER'S performance only.
+
+  ━━━━━━━━━━━━━━━━━━━━
+  ROLE DEFINITIONS
+  ━━━━━━━━━━━━━━━━━━━━
+
+  USER:
+  - The human participant
+  - The one attempting to build attraction
+  - The one being evaluated
+
+  CHARACTER:
+  - The simulated romantic interest
+  - Exists only as a reaction signal
+  - Is NOT being evaluated
+
+  ━━━━━━━━━━━━━━━━━━━━
+  CRITICAL EVALUATION RULES
+  ━━━━━━━━━━━━━━━━━━━━
+
+  1. Only analyze the USER.
+  2. Never evaluate the CHARACTER.
+  3. Never switch perspective.
+  4. Refer to the USER in third person.
+  5. The CHARACTER's responses exist only as feedback indicators.
+  6. Interest score changes represent performance feedback.
+  7. If you analyze the CHARACTER instead of the USER, the response is incorrect.
+  8. If you mix up roles, the response is incorrect.
+  9. Do NOT narrate from the CHARACTER perspective except in the final recap section.
+  10. Be behaviorally specific. No generic advice.
+
+  ━━━━━━━━━━━━━━━━━━━━
+  YOUR OBJECTIVES
+  ━━━━━━━━━━━━━━━━━━━━
+
+  Analyze the USER'S romantic performance and:
+
+  1. Identify the emotional arc driven by the USER
+  2. Interpret the interest trajectory as performance feedback
+  3. Identify USER behavioral strengths and weaknesses
+  4. Detect USER-driven turning points
+  5. Evaluate romantic compatibility based on USER behavior
+  6. Provide actionable improvement advice for the USER
+  7. Write a short dramatic recap from the CHARACTER'S perspective (based ONLY on USER behavior)
+  8. Classify the date into a clear archetype
+  9. Generate visualization metrics (0-100 scale)
+
+  ━━━━━━━━━━━━━━━━━━━━
+  INTEREST DATA (Performance Metrics)
+  ━━━━━━━━━━━━━━━━━━━━
+
+  ${JSON.stringify(stats, null, 2)}
+
+  ━━━━━━━━━━━━━━━━━━━━
+  CONVERSATION DATA (USER Performance Log)
+  ━━━━━━━━━━━━━━━━━━━━
+
+  The following is chronological interaction data.
+
+  Each turn contains:
+  - USER message
+  - CHARACTER response
+  - Interest score AFTER the turn
+
+  ${formattedContext}
+
+  ━━━━━━━━━━━━━━━━━━━━
+  ANALYSIS REQUIREMENTS
+  ━━━━━━━━━━━━━━━━━━━━
+
+  - Reference specific USER behaviors.
+  - Tie insights to interest score changes.
+  - Interpret volatility meaningfully.
+  - Identify causation patterns.
+  - Do not be vague.
+  - Do not be motivational.
+  - Be analytical and observant.
+  - Treat this as a performance review.
+
+  ━━━━━━━━━━━━━━━━━━━━
+  OUTPUT REQUIREMENTS
+  ━━━━━━━━━━━━━━━━━━━━
+
+  Return ONLY valid JSON.
+  Do NOT include markdown.
+  Do NOT include commentary.
+  Do NOT include explanations outside JSON.
+  Do NOT wrap in code blocks.
+  Return raw JSON only.
+
+  Use EXACTLY this schema:
+
+  {
+    "narrativeRecap": string,
+    "interestInsights": {
+      "trajectoryType": string,
+      "momentum": "gaining" | "losing" | "unstable" | "flat",
+      "volatilityInterpretation": string
+    },
+    "behaviorEvaluation": {
+      "strengths": [string, string],
+      "weaknesses": [string, string],
+      "communicationStyle": string
+    },
+    "turningPoints": {
+      "mostPositiveMoment": string,
+      "mostNegativeMoment": string,
+      "analysis": string
+    },
+    "improvementAdvice": {
+      "primarySuggestion": string,
+      "specificExampleLine": string
+    },
+    "compatibility": {
+      "score": number,
+      "wouldTextBack": "yes" | "maybe" | "unlikely",
+      "chemistryLevel": string,
+      "longTermPotential": string
+    },
+  }
+    `
+
+    const result = await model.generateContent(prompt);
+    const parsedJSON = extractAndParseJSON(result);
+    if (!parsedJSON) {
+      return res.status(500).json({ error: "Failed to parse Gemini JSON" });
+    }
+    res.json({
+      summary: stats,
+      advancedSummary: parsedJSON
+    });
+  } catch (err) {
+    console.error("Error fetching summary:", err);
+    res.status(500).json({ error: "Failed to generate summary" });
+  }
+});
 
 app.get("/clear", (req, res) => {
   clearPersonality(); // Modifty for proper removal
