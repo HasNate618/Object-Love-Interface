@@ -13,13 +13,16 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.35.0",
     "@google-cloud/vision": "^5.3.4",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "multer": "^2.0.2"
+    "mic": "^2.1.2",
+    "multer": "^2.0.2",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

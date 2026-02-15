@@ -220,7 +220,7 @@ class EventSerial:
 
 def is_button_touch(event: dict, touch_anywhere: bool) -> bool:
     """Check if a touch event falls within the Date button region."""
-    if event.get("event") == "button":
+    if event.get("event") in ("button", "button_down"):
         return True  # Physical button always counts
     if event.get("event") == "touch":
         if touch_anywhere:
@@ -268,6 +268,8 @@ def run_pipeline(
     camera_index: int = -1,
     touch_anywhere: bool = False,
     on_capture=None,
+    m5_url: str | None = None,
+    server_url: str | None = None,
 ):
     """
     Main pipeline loop.
@@ -375,10 +377,11 @@ def run_pipeline(
         frame_path = ""
 
     # Call the processing callback (e.g., send to Gemini on Pi)
+    capture_result = {}
     if on_capture and frame_path:
         print("  Processing capture (waiting for Pi response)...")
         try:
-            on_capture(frame_path)
+            capture_result = on_capture(frame_path) or {}
         except Exception as e:
             print(f"  Callback error: {e}")
     elif frame_path:
@@ -388,6 +391,37 @@ def run_pipeline(
     print("  Switching to face mode...")
     link.send_cmd({"cmd": "face", "on": True})
     print("  Face mode active! \u2665")
+
+    # Play personality starter audio with mouth sync
+    audio_url = capture_result.get("audioUrl") if isinstance(capture_result, dict) else None
+    if audio_url:
+        try:
+            from mouth_sync import play_with_mouth_sync, wait_for_animation
+            print("  Playing starter with mouth sync...")
+            # Use passed m5_url or fall back to env vars
+            final_m5_url = m5_url or os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", "")) or None
+            anim = play_with_mouth_sync(link, audio_url, final_m5_url)
+            wait_for_animation(anim)
+        except Exception as e:
+            print(f"  Mouth sync error: {e}")
+
+    # Enter conversation loop if conversation module available
+    try:
+        from conversation import run_conversation, find_mic_device, MIC_NAME_PATTERN
+        mic_device = find_mic_device(MIC_NAME_PATTERN)
+        if mic_device is not None:
+            print(f"  Mic detected: device {mic_device}")
+        else:
+            print("  WARNING: No external mic found, using default.")
+        # Use passed m5_url or fall back to env vars
+        final_m5_url = m5_url or os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", ""))
+        final_server_url = server_url or "http://localhost:3000"
+        run_conversation(link, mic_device=mic_device, m5_play_url=final_m5_url, server_url=final_server_url)
+    except ImportError:
+        print("  conversation.py not available — skipping conversation loop.")
+    except KeyboardInterrupt:
+        print("\n  Done.")
+
     link.close()
 
 
@@ -404,6 +438,20 @@ def default_on_capture(frame_path: str):
     print(f"  [default_on_capture] Send this to your Pi or Gemini pipeline.")
 
 
+def personality_on_capture(frame_path: str, server_url: str = "") -> dict:
+    """
+    Send captured image to the Node.js server to generate personality + TTS.
+    Returns the server response dict (includes audioUrl for mouth sync).
+    """
+    from conversation import generate_personality
+    result = generate_personality(frame_path, server_url)
+    if result:
+        print(f"  Personality generated: {result.get('personality', {}).get('identity', {}).get('name', '?')}")
+    else:
+        print("  WARNING: Personality generation failed.")
+    return result or {}
+
+
 # ============================================================================
 # CLI Entry Point
 # ============================================================================
@@ -417,6 +465,10 @@ def main():
                         help="Camera index (-1 = auto-detect)")
     parser.add_argument("--touch-anywhere", action="store_true",
                         help="Treat any touch as a Date button press")
+    parser.add_argument("--server", default="http://localhost:3000",
+                        help="Node.js image_to_voice server URL")
+    parser.add_argument("--m5-url", dest="m5_url", default="",
+                        help="M5Core1 play endpoint (e.g. http://IP:8082/play)")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -424,15 +476,22 @@ def main():
     print("=" * 50)
     print(f"  Serial port: {args.port}")
     print(f"  Camera:      {'auto' if args.camera < 0 else args.camera}")
+    print(f"  Server:      {args.server}")
     if os.environ.get("DATE_CAMERA_INDEX"):
         print(f"  DATE_CAMERA_INDEX: {os.environ.get('DATE_CAMERA_INDEX')}")
     print()
+
+    # Use personality callback if server is configured
+    def capture_cb(path):
+        return personality_on_capture(path, args.server)
 
     run_pipeline(
         port=args.port,
         camera_index=args.camera,
         touch_anywhere=args.touch_anywhere,
-        on_capture=default_on_capture,
+        on_capture=capture_cb,
+        m5_url=args.m5_url or None,
+        server_url=args.server,
     )
 
 
