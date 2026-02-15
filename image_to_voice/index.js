@@ -1,7 +1,5 @@
 require("dotenv").config();
-
 const express = require("express");
-const WebSocket = require("ws");
 const multer = require("multer");
 const cors = require("cors");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -16,7 +14,11 @@ const { loadPersonality, savePersonality, clearPersonality } = require("./helper
 const { loadInterest, saveInterest, clearInterest } = require("./helper/interest.js");
 const { loadVoice, saveRandomVoice, clearVoice } = require("./helper/voice.js");
 const { addTurn, loadContext, clearContext } = require("./helper/context.js")
-const mic = require("mic");
+
+
+const app = express();
+app.use(cors());
+app.use(express.json());
 
 // ---------------------------------------------------------------------------
 // Auto-detect the server's LAN IP so the M5 speaker can reach audio URLs.
@@ -36,13 +38,6 @@ function getLocalIP() {
 }
 
 const LOCAL_IP = process.env.HOST_IP || getLocalIP();
-
-
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
 const SERVER_PORT = process.env.PORT || 3000;
 const ROBOT_PLAY_URL = process.env.M5CORE2_URL;            // e.g. http://<m5_ip>:8082/play
 const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://${LOCAL_IP}:${SERVER_PORT}`;
@@ -56,13 +51,12 @@ const elevenlabs = new ElevenLabsClient({
   apiKey: process.env.ELEVENLABS_API_KEY, // Defaults to process.env.ELEVENLABS_API_KEY
 });
 
-
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const model = genAI.getGenerativeModel({
   model: "gemini-2.0-flash",
   generationConfig: {
-    maxOutputTokens: 1500,
+    maxOutputTokens: 500,
   }
 });
 
@@ -87,61 +81,6 @@ async function generateWithRetry(prompt, retries = 3) {
 const upload = multer({
   storage: multer.memoryStorage(),
 });
-
-/*
-const ws = new WebSocket("wss://api.elevenlabs.io/v1/speech-to-text/realtime", {
-  headers: {
-    "xi-api-key": process.env.ELEVENLABS_API_KEY,
-  },
-});
-
-ws.on("open", () => {
-  console.log("Connected to ElevenLabs Realtime STT");
-
-  // ---- Start microphone capture ----
-  const micInstance = mic({
-    rate: "16000",
-    channels: "1",
-    bitwidth: "16",
-    encoding: "signed-integer",
-    endian: "little",
-    device: "default",
-    fileType: "wav",
-    exitOnSilence: 0,
-    // force using FFmpeg as backend
-    debug: false
-  });
-  const micInputStream = micInstance.getAudioStream();
-  micInputStream.on("data", (chunk) => {
-    const base64Chunk = chunk.toString("base64");
-    ws.send(JSON.stringify({
-      message_type: "input_audio_chunk",
-      audio_base_64: base64Chunk,
-      commit: false
-    }));
-  });
-
-  micInstance.start();
-});
-
-// ---- Handle transcription ----
-ws.on("message", async (data) => {
-  const msg = JSON.parse(data);
-
-  if (msg.message_type === "partial_transcript") {
-    process.stdout.write(msg.text + "\r");
-  }
-
-  if (msg.message_type === "committed_transcript") {
-    console.log("\nFinal Transcript:", msg.text);
-
-    // ---- Send to Gemini AI ----
-    const responseText = await getResponse(msg.text);
-
-    console.log("AI Response:", responseText);
-  }
-});
-*/
 
 app.post("/generate-personality", upload.single("image"), async (req, res) => {
   try {
@@ -193,12 +132,12 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
     const starterResult = await generateWithRetry(starterPrompt);
     const starterText = starterResult.response.candidates?.[0]?.content?.parts?.[0]?.text || "Hello!";
     setRandomVoice();
-    const audioUrl = await textToSpeech(starterText);
+    // const audioUrl = await textToSpeech(starterText);
 
     res.json({
       personality,
       starter: starterText,
-      audioUrl: audioUrl || null,
+      // audioUrl: audioUrl || null,
     });
 
   } catch (err) {
@@ -209,22 +148,22 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
 
 async function generatePersonality(objectName) {
   const prompt = `
-You generate a personality for a human-robot dating simulation.
+    You generate a personality for a human-robot dating simulation.
 
-Input object: "${objectName}"
+    Input object: "${objectName}"
 
-Return ONLY valid JSON:
+    Return ONLY valid JSON:
 
-{
-  "identity": { "name": "", "archetype": "", "object_origin": "" },
-  "tone": { "energy_level": 1-10, "formality": 1-10, "playfulness": 1-10, "confidence": 1-10 },
-  "values": [],
-  "conversation_style": { "sentence_length": "", "humor": "", "flirting_style": "" },
-  "behavioral_rules": [],
-  "dating_traits": { "love_language": "", "approach": "", "dealbreakers": [] },
-  "negative_traits": []
-}
-`;
+    {
+      "identity": { "name": "", "archetype": "", "object_origin": "" },
+      "tone": { "energy_level": 1-10, "formality": 1-10, "playfulness": 1-10, "confidence": 1-10 },
+      "values": [],
+      "conversation_style": { "sentence_length": "", "humor": "", "flirting_style": "" },
+      "behavioral_rules": [],
+      "dating_traits": { "love_language": "", "approach": "", "dealbreakers": [] },
+      "negative_traits": []
+    }
+  `;
 
   const result = await generateWithRetry(prompt);
 
@@ -266,50 +205,6 @@ function safeParseJson(raw) {
 
   return JSON.parse(text);
 }
-
-/*
-async function getResponse(input) {
-
-  if (!input) {
-    return res.status(400).json({ error: "Missing input query parameter" });
-  }
-
-  try {
-    if (!fs.existsSync("personality.json")) {
-      return res.status(400).json({ error: "No personality available" });
-    }
-
-    personality = JSON.parse(fs.readFileSync("personality.json"));
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to load personality" });
-  }
-
-  try {
-    const prompt = `
-You are roleplaying with this personality:
-
-${JSON.stringify(personality, null, 2)}
-
-Stay fully in character.
-
-User input: "${input}"
-`;
-
-    const result = await generateWithRetry(prompt);
-
-    const responseText =
-      result.response.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "No response";
-
-    res.json({ response: responseText });
-
-    textToSpeech(responseText);
-  } catch (err) {
-    console.error("Error generating response:", err);
-    res.status(500).json({ error: "Failed to generate response" });
-  }
-}
-*/
 
 app.post("/respond", async (req, res) => {
   const userInput = req.body.input;
@@ -357,9 +252,9 @@ app.post("/respond", async (req, res) => {
       - If input aligns with your values → +0.5
       - If input matches your flirting_style → +0.5
       - If input shows curiosity or emotional awareness → +0.3
-      - If input violates a dealbreaker → -0.5
-      - If input triggers a negative trait → -0.3
-      - Otherwise → 0
+      - If input violates a dealbreaker → -0.9
+      - If input triggers a negative trait → -0.5
+      - Otherwise → -0.1
 
       Adjust the current interest level slightly based on the above.
       Clamp the final value between 0 and 10.
@@ -392,16 +287,28 @@ app.post("/respond", async (req, res) => {
       }
     `;
 
-
     const result = await model.generateContent(prompt);
 
-    const rawText =
-      result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
+    const parsed = extractAndParseJSON(result);
 
-    // Await TTS and return audio URL — Python orchestrates playback + mouth sync
-    const audioUrl = await textToSpeech(responseText);
+    if (!parsed) {
+      return res.status(500).json({ error: "Failed to parse Gemini JSON" });
+    }
 
-    res.json({ response: responseText, audioUrl: audioUrl || null });
+    // Save updated interest
+    saveInterest(parsed.interest);
+
+    // Save turn to context
+    addTurn(userInput, parsed.response, parsed.interest);
+
+    // Generate TTS only from response text
+    // audioUrl = await textToSpeech(parsed.response);
+
+    res.json({
+      response: parsed.response,
+      interest: parsed.interest,
+      // audioUrl: audioUrl || null
+    });
   } catch (err) {
     console.error("Error generating response:", err);
     res.status(500).json({ error: "Failed to generate response" });
@@ -501,8 +408,7 @@ app.post("/tts", async (req, res) => {
 
 async function textToSpeech(text) {
   try {
-    console.log("Starting TTS:", text)
-    ensureTmpDir();
+    console.log("Starting:", text)
     const voiceId = JSON.parse(fs.readFileSync("voice.json")).voiceId;
     const audioStream = await elevenlabs.textToSpeech.convert(
       voiceId,
@@ -523,8 +429,7 @@ async function textToSpeech(text) {
     const audioUrl = `${AUDIO_HOST_URL}/tmp/audio_${timestamp}.mp3`;
     console.log("TTS ready:", audioUrl);
 
-    // Return the URL — caller decides whether to play on robot
-    return audioUrl;
+    playOnRobot(`${AUDIO_HOST_URL}/tmp/audio.mp3`)
   } catch (error) {
     console.error("TTS Error:", error.response?.data || error.message);
     return null;
@@ -533,7 +438,7 @@ async function textToSpeech(text) {
 
 function extractAndParseJSON(result) {
   try {
-    // 1️⃣ Get raw model text
+    // Get raw model text
     const rawText =
       result?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
 
@@ -541,13 +446,13 @@ function extractAndParseJSON(result) {
       throw new Error("No text returned from Gemini.");
     }
 
-    // 2️⃣ Remove markdown fences if present
+    // Remove markdown fences if present
     let cleaned = rawText
       .replace(/```json/gi, "")
       .replace(/```/g, "")
       .trim();
 
-    // 3️⃣ If Gemini accidentally added text before/after JSON,
+    // If Gemini accidentally added text before/after JSON,
     // extract the first {...} block
     const firstBrace = cleaned.indexOf("{");
     const lastBrace = cleaned.lastIndexOf("}");
@@ -558,7 +463,7 @@ function extractAndParseJSON(result) {
 
     cleaned = cleaned.slice(firstBrace, lastBrace + 1);
 
-    // 4️⃣ Parse JSON
+    // Parse JSON
     const parsed = JSON.parse(cleaned);
 
     return parsed;
@@ -584,136 +489,137 @@ app.get("/summary", async (req, res) => {
     `).join("\n\n");
 
 
-    const prompt = `You are a high-precision romantic performance analyst AI.
+    const prompt = 
+        `You are a high-precision romantic performance analyst AI.
 
-  You are evaluating ONE subject only:
-  → The HUMAN USER.
+        You are evaluating ONE subject only:
+        → The HUMAN USER.
 
-  The USER just completed a simulated dinner date with a personality-driven AI CHARACTER.
+        The USER just completed a simulated dinner date with a personality-driven AI CHARACTER.
 
-  The USER is attempting to impress the CHARACTER.
+        The USER is attempting to impress the CHARACTER.
 
-  You are grading the USER'S performance only.
+        You are grading the USER'S performance only.
 
-  ━━━━━━━━━━━━━━━━━━━━
-  ROLE DEFINITIONS
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        ROLE DEFINITIONS
+        ━━━━━━━━━━━━━━━━━━━━
 
-  USER:
-  - The human participant
-  - The one attempting to build attraction
-  - The one being evaluated
+        USER:
+        - The human participant
+        - The one attempting to build attraction
+        - The one being evaluated
 
-  CHARACTER:
-  - The simulated romantic interest
-  - Exists only as a reaction signal
-  - Is NOT being evaluated
+        CHARACTER:
+        - The simulated romantic interest
+        - Exists only as a reaction signal
+        - Is NOT being evaluated
 
-  ━━━━━━━━━━━━━━━━━━━━
-  CRITICAL EVALUATION RULES
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        CRITICAL EVALUATION RULES
+        ━━━━━━━━━━━━━━━━━━━━
 
-  1. Only analyze the USER.
-  2. Never evaluate the CHARACTER.
-  3. Never switch perspective.
-  4. Refer to the USER in third person.
-  5. The CHARACTER's responses exist only as feedback indicators.
-  6. Interest score changes represent performance feedback.
-  7. If you analyze the CHARACTER instead of the USER, the response is incorrect.
-  8. If you mix up roles, the response is incorrect.
-  9. Do NOT narrate from the CHARACTER perspective except in the final recap section.
-  10. Be behaviorally specific. No generic advice.
+        1. Only analyze the USER.
+        2. Never evaluate the CHARACTER.
+        3. Never switch perspective.
+        4. Refer to the USER in third person.
+        5. The CHARACTER's responses exist only as feedback indicators.
+        6. Interest score changes represent performance feedback.
+        7. If you analyze the CHARACTER instead of the USER, the response is incorrect.
+        8. If you mix up roles, the response is incorrect.
+        9. Do NOT narrate from the CHARACTER perspective except in the final recap section.
+        10. Be behaviorally specific. No generic advice.
 
-  ━━━━━━━━━━━━━━━━━━━━
-  YOUR OBJECTIVES
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        YOUR OBJECTIVES
+        ━━━━━━━━━━━━━━━━━━━━
 
-  Analyze the USER'S romantic performance and:
+        Analyze the USER'S romantic performance and:
 
-  1. Identify the emotional arc driven by the USER
-  2. Interpret the interest trajectory as performance feedback
-  3. Identify USER behavioral strengths and weaknesses
-  4. Detect USER-driven turning points
-  5. Evaluate romantic compatibility based on USER behavior
-  6. Provide actionable improvement advice for the USER
-  7. Write a short dramatic recap from the CHARACTER'S perspective (based ONLY on USER behavior)
-  8. Classify the date into a clear archetype
-  9. Generate visualization metrics (0-100 scale)
+        1. Identify the emotional arc driven by the USER
+        2. Interpret the interest trajectory as performance feedback
+        3. Identify USER behavioral strengths and weaknesses
+        4. Detect USER-driven turning points
+        5. Evaluate romantic compatibility based on USER behavior
+        6. Provide actionable improvement advice for the USER
+        7. Write a short dramatic recap from the CHARACTER'S perspective (based ONLY on USER behavior)
+        8. Classify the date into a clear archetype
+        9. Generate visualization metrics (0-100 scale)
 
-  ━━━━━━━━━━━━━━━━━━━━
-  INTEREST DATA (Performance Metrics)
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        INTEREST DATA (Performance Metrics)
+        ━━━━━━━━━━━━━━━━━━━━
 
-  ${JSON.stringify(stats, null, 2)}
+        ${JSON.stringify(stats, null, 2)}
 
-  ━━━━━━━━━━━━━━━━━━━━
-  CONVERSATION DATA (USER Performance Log)
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        CONVERSATION DATA (USER Performance Log)
+        ━━━━━━━━━━━━━━━━━━━━
 
-  The following is chronological interaction data.
+        The following is chronological interaction data.
 
-  Each turn contains:
-  - USER message
-  - CHARACTER response
-  - Interest score AFTER the turn
+        Each turn contains:
+        - USER message
+        - CHARACTER response
+        - Interest score AFTER the turn
 
-  ${formattedContext}
+        ${formattedContext}
 
-  ━━━━━━━━━━━━━━━━━━━━
-  ANALYSIS REQUIREMENTS
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        ANALYSIS REQUIREMENTS
+        ━━━━━━━━━━━━━━━━━━━━
 
-  - Reference specific USER behaviors.
-  - Tie insights to interest score changes.
-  - Interpret volatility meaningfully.
-  - Identify causation patterns.
-  - Do not be vague.
-  - Do not be motivational.
-  - Be analytical and observant.
-  - Treat this as a performance review.
+        - Reference specific USER behaviors.
+        - Tie insights to interest score changes.
+        - Interpret volatility meaningfully.
+        - Identify causation patterns.
+        - Do not be vague.
+        - Do not be motivational.
+        - Be analytical and observant.
+        - Treat this as a performance review.
 
-  ━━━━━━━━━━━━━━━━━━━━
-  OUTPUT REQUIREMENTS
-  ━━━━━━━━━━━━━━━━━━━━
+        ━━━━━━━━━━━━━━━━━━━━
+        OUTPUT REQUIREMENTS
+        ━━━━━━━━━━━━━━━━━━━━
 
-  Return ONLY valid JSON.
-  Do NOT include markdown.
-  Do NOT include commentary.
-  Do NOT include explanations outside JSON.
-  Do NOT wrap in code blocks.
-  Return raw JSON only.
+        Return ONLY valid JSON.
+        Do NOT include markdown.
+        Do NOT include commentary.
+        Do NOT include explanations outside JSON.
+        Do NOT wrap in code blocks.
+        Return raw JSON only.
 
-  Use EXACTLY this schema:
+        Use EXACTLY this schema:
 
-  {
-    "narrativeRecap": string,
-    "interestInsights": {
-      "trajectoryType": string,
-      "momentum": "gaining" | "losing" | "unstable" | "flat",
-      "volatilityInterpretation": string
-    },
-    "behaviorEvaluation": {
-      "strengths": [string, string],
-      "weaknesses": [string, string],
-      "communicationStyle": string
-    },
-    "turningPoints": {
-      "mostPositiveMoment": string,
-      "mostNegativeMoment": string,
-      "analysis": string
-    },
-    "improvementAdvice": {
-      "primarySuggestion": string,
-      "specificExampleLine": string
-    },
-    "compatibility": {
-      "score": number,
-      "wouldTextBack": "yes" | "maybe" | "unlikely",
-      "chemistryLevel": string,
-      "longTermPotential": string
-    },
-  }
-    `
+        {
+          "narrativeRecap": string,
+          "interestInsights": {
+            "trajectoryType": string,
+            "momentum": "gaining" | "losing" | "unstable" | "flat",
+            "volatilityInterpretation": string
+          },
+          "behaviorEvaluation": {
+            "strengths": [string, string],
+            "weaknesses": [string, string],
+            "communicationStyle": string
+          },
+          "turningPoints": {
+            "mostPositiveMoment": string,
+            "mostNegativeMoment": string,
+            "analysis": string
+          },
+          "improvementAdvice": {
+            "primarySuggestion": string,
+            "specificExampleLine": string
+          },
+          "compatibility": {
+            "score": number,
+            "wouldTextBack": string,
+            "chemistryLevel": string,
+            "longTermPotential": string
+          }
+        }
+          `
 
     const result = await model.generateContent(prompt);
     const parsedJSON = extractAndParseJSON(result);
@@ -731,7 +637,7 @@ app.get("/summary", async (req, res) => {
 });
 
 app.get("/clear", (req, res) => {
-  clearPersonality(); // Modifty for proper removal
+  clearPersonality();
   res.json({ message: "Personality cleared" });
 });
 

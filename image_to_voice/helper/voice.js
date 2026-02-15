@@ -30,6 +30,7 @@ function saveRandomVoice() {
   const voiceId = voiceIds[randomIndex];
   fs.writeFileSync("./voice.json", JSON.stringify({ voiceId }));
 }
+
 function clearVoice() {
   fs.writeFileSync(FILE, JSON.stringify({ voiceId: null }, null, 2));
 }
@@ -37,5 +38,6 @@ function clearVoice() {
 module.exports = {
   loadVoice,
   saveRandomVoice,
-  clearVoice
+  clearVoice,
+  saveRandomVoice
 };
