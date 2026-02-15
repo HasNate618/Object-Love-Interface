@@ -289,6 +289,10 @@ def run_conversation(
                     servo.set_interest(interest)
                 except Exception as e:
                     print(f"  [servo] Update failed: {e}")
+            else:
+                print("  [servo] Skipping update (no servo configured)")
+        else:
+            print("  [love] Skipping update (no interest in response)")
 
         if response:
             print(f"  AI: {response[:120]}")

@@ -457,6 +457,8 @@ def run_pipeline(
         if servo_port:
             from servo_serial import ServoSerial
             servo = ServoSerial(servo_port)
+        else:
+            print("  [servo] Not configured (no --servo-port)")
     except Exception as e:
         print(f"  WARNING: Could not open servo on {servo_port}: {e}")
         servo = None

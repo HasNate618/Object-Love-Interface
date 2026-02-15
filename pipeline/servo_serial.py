@@ -41,7 +41,7 @@ class ServoSerial:
 
     def send_servo(self, angle: int):
         """Send an S<angle> command (clamped to 0–270)."""
-        angle = max(0, min(270, int(angle)))
+        angle = max(135, min(145, int(angle)))
         cmd = f"S{angle}\n"
         self.ser.write(cmd.encode())
         self.ser.flush()
