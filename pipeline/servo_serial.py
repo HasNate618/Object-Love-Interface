@@ -7,7 +7,8 @@ The ESP32 accepts two commands:
 
 This module maps an interest level (0–10) to:
     - Love value for SenseCAP screen (0.0 – 1.0)
-    - Servo angle for the arm (135 – 220)
+    - Servo angle for the arm (120 – 150)
+        - Servo angle for the arm (120 – 150)
 
 Usage:
     servo = ServoSerial("/dev/ttyUSB0")     # or "COM7", etc.
@@ -19,14 +20,14 @@ import serial
 import time
 
 # Servo angle range that maps to interest 0..10
-SERVO_MIN = 130
-SERVO_MAX = 180
+SERVO_MIN = 120
+SERVO_MAX = 150
 
 
 class ServoSerial:
     """Persistent serial connection to the ESP32 servo board."""
 
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 1.0, init_angle: int = 130):
+    def __init__(self, port: str, baud: int = 115200, timeout: float = 1.0, init_angle: int = 135):
         self.port = port
         self.ser = serial.Serial(port, baud, timeout=timeout)
         time.sleep(0.5)  # Let ESP32 finish boot
@@ -43,8 +44,8 @@ class ServoSerial:
     # ------------------------------------------------------------------
 
     def send_servo(self, angle: int):
-        """Send an S<angle> command (clamped to 0–270)."""
-        angle = max(SERVO_MIN, min(270, int(angle)))
+        """Send an S<angle> command (clamped to SERVO_MIN–SERVO_MAX)."""
+        angle = max(SERVO_MIN, min(SERVO_MAX, int(angle)))
         cmd = f"S{angle}\n"
         self.ser.write(cmd.encode())
         self.ser.flush()
@@ -69,6 +70,13 @@ class ServoSerial:
         """Map interest (0–10) → servo angle (SERVO_MIN–SERVO_MAX)."""
         t = max(0.0, min(10.0, interest)) / 10.0
         return int(SERVO_MIN + t * (SERVO_MAX - SERVO_MIN))
+
+    def set_interest(self, interest: float) -> float:
+        """Apply interest (0–10) to servo and return love value (0.0–1.0)."""
+        angle = self.interest_to_servo(float(interest))
+        self.send_servo(angle)
+        print(f"  [servo] interest={interest} -> angle={angle}")
+        return self.interest_to_love(float(interest))
 
     # ------------------------------------------------------------------
 
