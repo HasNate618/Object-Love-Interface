@@ -270,7 +270,7 @@ def auto_select_camera() -> int:
 
 def run_pipeline(
     port: str = "COM6",
-    camera_index: int = -1,
+    camera_index: int | str = -1,
     touch_anywhere: bool = False,
     on_capture=None,
     m5_url: str | None = None,
@@ -306,16 +306,36 @@ def run_pipeline(
     print("Disabling face mode...")
     link.send_cmd({"cmd": "face", "on": False})
 
-    if camera_index < 0:
+    cam_index: int | None = None
+    cam_path: str | None = None
+    if isinstance(camera_index, str):
+        if camera_index.strip().isdigit():
+            cam_index = int(camera_index.strip())
+        elif camera_index.startswith("/dev/"):
+            cam_path = camera_index
+        else:
+            print(f"WARNING: Unknown camera value '{camera_index}', using auto-detect")
+    else:
+        cam_index = camera_index
+
+    if cam_index is not None and cam_index < 0:
         env_idx = os.environ.get("DATE_CAMERA_INDEX")
         if env_idx and env_idx.isdigit():
-            camera_index = int(env_idx)
+            cam_index = int(env_idx)
         else:
-            camera_index = auto_select_camera()
-    print(f"Opening camera index {camera_index}...")
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            cam_index = auto_select_camera()
+
+    if cam_path:
+        print(f"Opening camera device {cam_path}...")
+        cap = cv2.VideoCapture(cam_path, cv2.CAP_V4L2)
+    else:
+        print(f"Opening camera index {cam_index}...")
+        cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
     if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index, cv2.CAP_MSMF)
+        if cam_path:
+            cap = cv2.VideoCapture(cam_path, cv2.CAP_V4L2)
+        else:
+            cap = cv2.VideoCapture(cam_index, cv2.CAP_MSMF)
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera {camera_index}")
         link.close()
@@ -479,8 +499,8 @@ def main():
     parser.add_argument("--port", default="COM6", help="SenseCAP serial port")
     parser.add_argument("--wifi", default=None, metavar="HOST",
                         help="Connect via WiFi TCP instead of serial (IP or hostname, e.g. sensecap.local)")
-    parser.add_argument("--camera", type=int, default=-1,
-                        help="Camera index (-1 = auto-detect)")
+    parser.add_argument("--camera", default="-1",
+                        help="Camera index or device path (e.g. 0, 1, /dev/video0; -1 = auto-detect)")
     parser.add_argument("--touch-anywhere", action="store_true",
                         help="Treat any touch as a Date button press")
     parser.add_argument("--server", default="http://localhost:3000",
@@ -495,7 +515,18 @@ def main():
     print(f"  Serial port: {args.port}")
     if args.wifi:
         print(f"  WiFi host:   {args.wifi}")
-    print(f"  Camera:      {'auto' if args.camera < 0 else args.camera}")
+    
+    # Parse camera argument: convert to int if numeric, keep as string if device path
+    camera_arg = args.camera
+    if isinstance(camera_arg, str) and camera_arg.strip().lstrip('-').isdigit():
+        camera_index = int(camera_arg)
+    else:
+        camera_index = camera_arg  # Keep as string for device paths like /dev/video0
+    
+    cam_label = camera_arg
+    if isinstance(camera_index, int) and camera_index < 0:
+        cam_label = "auto"
+    print(f"  Camera:      {cam_label}")
     print(f"  Server:      {args.server}")
     if os.environ.get("DATE_CAMERA_INDEX"):
         print(f"  DATE_CAMERA_INDEX: {os.environ.get('DATE_CAMERA_INDEX')}")
@@ -507,7 +538,7 @@ def main():
 
     run_pipeline(
         port=args.port,
-        camera_index=args.camera,
+        camera_index=camera_index,
         touch_anywhere=args.touch_anywhere,
         on_capture=capture_cb,
         m5_url=args.m5_url or None,
