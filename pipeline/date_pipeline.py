@@ -312,12 +312,13 @@ def run_pipeline(
         try:
             from gpio_button import GpioLimitSwitch
             limit_switch = GpioLimitSwitch(limit_switch_gpio)
-            print(f"  [limit_switch] GPIO enabled on GPIO{limit_switch_gpio}")
+            print(f"  [limit_switch] GPIO enabled on GPIO{limit_switch_gpio} (async)")
         except Exception as e:
             print(f"  [limit_switch] GPIO disabled: {e}")
 
     def check_limit_switch() -> dict | None:
-        return limit_switch.check_state_change() if limit_switch else None
+        """Non-blocking check for queued limit switch state changes."""
+        return limit_switch.consume_state_change() if limit_switch else None
 
     if wifi_host:
         from wifi_link import WiFiLink
