@@ -262,6 +262,7 @@ def run_conversation(
     server_url: str = "",
     m5_play_url: str = "",
     servo=None,
+    reset_checker=None,
 ):
     """
     Push-to-talk conversation loop with lip-synced mouth animation.
@@ -337,6 +338,9 @@ def run_conversation(
 
     try:
         while True:
+            if reset_checker and reset_checker():
+                print("  [reset] GPIO reset requested — exiting conversation loop")
+                return True
             events = link.collect_events()
             for ev in events:
                 if ev.get("event") == "button_down" and not recording:

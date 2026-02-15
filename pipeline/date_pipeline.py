@@ -277,6 +277,7 @@ def run_pipeline(
     server_url: str | None = None,
     wifi_host: str | None = None,
     servo_port: str | None = None,
+    reset_gpio: int | None = None,
 ):
     """
     Main pipeline loop.
@@ -292,6 +293,18 @@ def run_pipeline(
     """
     # --- Setup ---
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    reset_button = None
+    if reset_gpio is not None and reset_gpio >= 0:
+        try:
+            from gpio_button import GpioResetButton
+            reset_button = GpioResetButton(reset_gpio)
+            print(f"  [reset] GPIO button enabled on GPIO{reset_gpio}")
+        except Exception as e:
+            print(f"  [reset] GPIO disabled: {e}")
+
+    def check_reset() -> bool:
+        return bool(reset_button and reset_button.consume_reset())
 
     if wifi_host:
         from wifi_link import WiFiLink
@@ -355,6 +368,13 @@ def run_pipeline(
 
     try:
         while True:
+            if check_reset():
+                print("  [reset] GPIO reset requested — restarting pipeline")
+                cap.release()
+                link.close()
+                if reset_button:
+                    reset_button.close()
+                return True
             # 1. Capture webcam frame
             ret, cv_frame = cap.read()
             if not ret:
@@ -398,6 +418,8 @@ def run_pipeline(
         print("\nInterrupted by user.")
         cap.release()
         link.close()
+        if reset_button:
+            reset_button.close()
         return
 
     # --- Date Button Pressed ---
@@ -475,7 +497,21 @@ def run_pipeline(
         # Use passed m5_url or fall back to env vars
         final_m5_url = m5_url or os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", ""))
         final_server_url = server_url or "http://localhost:3000"
-        run_conversation(link, mic_device=mic_device, m5_play_url=final_m5_url, server_url=final_server_url, servo=servo)
+        reset_requested = run_conversation(
+            link,
+            mic_device=mic_device,
+            m5_play_url=final_m5_url,
+            server_url=final_server_url,
+            servo=servo,
+            reset_checker=check_reset,
+        )
+        if reset_requested:
+            if servo:
+                servo.close()
+            link.close()
+            if reset_button:
+                reset_button.close()
+            return True
     except ImportError:
         print("  conversation.py not available — skipping conversation loop.")
     except KeyboardInterrupt:
@@ -483,8 +519,11 @@ def run_pipeline(
 
     if servo:
         servo.close()
+    if reset_button:
+        reset_button.close()
 
     link.close()
+    return False
 
 
 # ============================================================================
@@ -535,6 +574,8 @@ def main():
                         help="M5Core1 play endpoint (e.g. http://IP:8082/play)")
     parser.add_argument("--servo-port", dest="servo_port", default=None,
                         help="Serial port for the ESP32 servo controller (e.g. /dev/ttyUSB0 or COM7)")
+    parser.add_argument("--reset-gpio", dest="reset_gpio", type=int, default=17,
+                        help="GPIO pin for reset button (default: 17). Use -1 to disable.")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -564,16 +605,20 @@ def main():
     def capture_cb(path):
         return personality_on_capture(path, args.server)
 
-    run_pipeline(
-        port=args.port,
-        camera_index=camera_index,
-        touch_anywhere=args.touch_anywhere,
-        on_capture=capture_cb,
-        m5_url=args.m5_url or None,
-        server_url=args.server,
-        wifi_host=args.wifi,
-        servo_port=args.servo_port,
-    )
+    while True:
+        reset_requested = run_pipeline(
+            port=args.port,
+            camera_index=camera_index,
+            touch_anywhere=args.touch_anywhere,
+            on_capture=capture_cb,
+            m5_url=args.m5_url or None,
+            server_url=args.server,
+            wifi_host=args.wifi,
+            servo_port=args.servo_port,
+            reset_gpio=args.reset_gpio,
+        )
+        if not reset_requested:
+            break
 
 
 if __name__ == "__main__":
