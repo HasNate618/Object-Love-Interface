@@ -430,7 +430,7 @@ def run_pipeline(
     print("  Face mode active! \u2665")
 
     # Set initial love value from personality response (interest starts at 5)
-    initial_interest = capture_result.get("interest", 5) if isinstance(capture_result, dict) else 5
+    initial_interest = capture_result.get("interest", 0) if isinstance(capture_result, dict) else 0
     initial_love = max(0.0, min(1.0, initial_interest / 10.0))
     try:
         link.send_cmd({"cmd": "love", "value": initial_love})
