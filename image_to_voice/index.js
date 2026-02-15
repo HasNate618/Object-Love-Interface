@@ -39,7 +39,7 @@ app.use(express.json());
 
 const SERVER_PORT = process.env.PORT || 3000;
 const ROBOT_PLAY_URL = process.env.M5CORE2_URL;            // e.g. http://<m5_ip>:8082/play
-const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://${LOCAL_IP}:${SERVER_PORT}`;
+const AUDIO_HOST_URL = process.env.AUDIO_HOST_URL || `http://localhost:${SERVER_PORT}`;
 const DISABLE_ROBOT_TTS = process.env.DISABLE_ROBOT_TTS === "1";
 
 if (!process.env.GEMINI_API_KEY) {
