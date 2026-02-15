@@ -278,6 +278,7 @@ def run_pipeline(
     wifi_host: str | None = None,
     servo_port: str | None = None,
     reset_gpio: int | None = None,
+    limit_switch_gpio: int | None = None,
 ):
     """
     Main pipeline loop.
@@ -305,6 +306,18 @@ def run_pipeline(
 
     def check_reset() -> bool:
         return bool(reset_button and reset_button.consume_reset())
+
+    limit_switch = None
+    if limit_switch_gpio is not None and limit_switch_gpio >= 0:
+        try:
+            from gpio_button import GpioLimitSwitch
+            limit_switch = GpioLimitSwitch(limit_switch_gpio)
+            print(f"  [limit_switch] GPIO enabled on GPIO{limit_switch_gpio}")
+        except Exception as e:
+            print(f"  [limit_switch] GPIO disabled: {e}")
+
+    def check_limit_switch() -> dict | None:
+        return limit_switch.check_state_change() if limit_switch else None
 
     if wifi_host:
         from wifi_link import WiFiLink
@@ -374,7 +387,15 @@ def run_pipeline(
                 link.close()
                 if reset_button:
                     reset_button.close()
+                if limit_switch:
+                    limit_switch.close()
                 return True
+
+            # Check limit switch state
+            switch_state = check_limit_switch()
+            if switch_state:
+                print(f"  [limit_switch] Switch {switch_state['state_name']}")
+
             # 1. Capture webcam frame
             ret, cv_frame = cap.read()
             if not ret:
@@ -420,6 +441,8 @@ def run_pipeline(
         link.close()
         if reset_button:
             reset_button.close()
+        if limit_switch:
+            limit_switch.close()
         return
 
     # --- Date Button Pressed ---
@@ -576,6 +599,8 @@ def main():
                         help="Serial port for the ESP32 servo controller (e.g. /dev/ttyUSB0 or COM7)")
     parser.add_argument("--reset-gpio", dest="reset_gpio", type=int, default=17,
                         help="GPIO pin for reset button (default: 17). Use -1 to disable.")
+    parser.add_argument("--limit-switch-gpio", dest="limit_switch_gpio", type=int, default=-1,
+                        help="GPIO pin for limit switch (default: -1 to disable). e.g., 17 for GPIO17.")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -616,6 +641,7 @@ def main():
             wifi_host=args.wifi,
             servo_port=args.servo_port,
             reset_gpio=args.reset_gpio,
+            limit_switch_gpio=args.limit_switch_gpio,
         )
         if not reset_requested:
             break
