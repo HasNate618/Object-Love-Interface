@@ -115,14 +115,33 @@ class PushToTalkRecorder:
         self._frames = []
         self._recording = True
         self._pa = pyaudio.PyAudio()
-        self._stream = self._pa.open(
-            format=FORMAT,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=CHUNK,
-        )
+        try:
+            self._stream = self._pa.open(
+                format=FORMAT,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=CHUNK,
+            )
+        except OSError as e:
+            # Fallback to the device's default sample rate if the requested
+            # rate is not supported (common on some USB mics).
+            if self.device_index is not None:
+                info = self._pa.get_device_info_by_index(self.device_index)
+                fallback_rate = int(info.get("defaultSampleRate", self.sample_rate))
+            else:
+                fallback_rate = 44100
+            print(f"  [mic] Invalid sample rate {self.sample_rate}, retrying at {fallback_rate}")
+            self.sample_rate = fallback_rate
+            self._stream = self._pa.open(
+                format=FORMAT,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=CHUNK,
+            )
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
         self._thread.start()
 
