@@ -19,14 +19,14 @@ import serial
 import time
 
 # Servo angle range that maps to interest 0..10
-SERVO_MIN = 135
-SERVO_MAX = 220
+SERVO_MIN = 130
+SERVO_MAX = 180
 
 
 class ServoSerial:
     """Persistent serial connection to the ESP32 servo board."""
 
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 1.0):
+    def __init__(self, port: str, baud: int = 115200, timeout: float = 1.0, init_angle: int = 130):
         self.port = port
         self.ser = serial.Serial(port, baud, timeout=timeout)
         time.sleep(0.5)  # Let ESP32 finish boot
@@ -34,6 +34,9 @@ class ServoSerial:
         while self.ser.in_waiting:
             self.ser.read(self.ser.in_waiting)
         print(f"  [servo] Connected to {port}")
+        # Initialize servo to a known starting angle.
+        self.send_servo(init_angle)
+        print(f"  [servo] Init angle S{int(init_angle)}")
 
     # ------------------------------------------------------------------
     # Low-level commands
@@ -41,7 +44,7 @@ class ServoSerial:
 
     def send_servo(self, angle: int):
         """Send an S<angle> command (clamped to 0–270)."""
-        angle = max(135, int(angle))
+        angle = max(SERVO_MIN, min(270, int(angle)))
         cmd = f"S{angle}\n"
         self.ser.write(cmd.encode())
         self.ser.flush()
@@ -66,19 +69,6 @@ class ServoSerial:
         """Map interest (0–10) → servo angle (SERVO_MIN–SERVO_MAX)."""
         t = max(0.0, min(10.0, interest)) / 10.0
         return int(SERVO_MIN + t * (SERVO_MAX - SERVO_MIN))
-
-    def set_interest(self, interest: float) -> float:
-        """
-        Drive both servo and return mapped love value.
-
-        Returns the love value (0.0–1.0) so the caller can forward it
-        to the SenseCAP screen.
-        """
-        angle = self.interest_to_servo(interest)
-        love = self.interest_to_love(interest)
-        self.send_servo(angle)
-        print(f"  [servo] interest={interest:.1f} → servo S{angle}, love={love:.2f}")
-        return love
 
     # ------------------------------------------------------------------
 
