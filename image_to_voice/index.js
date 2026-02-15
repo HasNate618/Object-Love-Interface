@@ -66,6 +66,24 @@ const model = genAI.getGenerativeModel({
   }
 });
 
+async function generateWithRetry(prompt, retries = 3) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await model.generateContent(prompt);
+    } catch (err) {
+      const status = err?.status || err?.statusCode;
+      if (status !== 429 || attempt >= retries) {
+        throw err;
+      }
+      const delayMs = 1000 * Math.pow(2, attempt);
+      console.warn(`Gemini 429 — retrying in ${delayMs}ms (${attempt + 1}/${retries})`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      attempt += 1;
+    }
+  }
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
 });
@@ -133,7 +151,7 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
 
     const base64Image = req.file.buffer.toString("base64");
 
-    const imageResult = await model.generateContent([
+    const imageResult = await generateWithRetry([
       {
         inlineData: {
           mimeType: req.file.mimetype,
@@ -172,14 +190,15 @@ app.post("/generate-personality", upload.single("image"), async (req, res) => {
         - Stay fully in character
       `;
 
-    const starterResult = await model.generateContent(starterPrompt);
+    const starterResult = await generateWithRetry(starterPrompt);
     const starterText = starterResult.response.candidates?.[0]?.content?.parts?.[0]?.text || "Hello!";
-    saveRandomVoice();
-    // await textToSpeech(starterText);
+    setRandomVoice();
+    const audioUrl = await textToSpeech(starterText);
 
     res.json({
       personality,
-      starter: starterText
+      starter: starterText,
+      audioUrl: audioUrl || null,
     });
 
   } catch (err) {
@@ -207,7 +226,7 @@ Return ONLY valid JSON:
 }
 `;
 
-  const result = await model.generateContent(prompt);
+  const result = await generateWithRetry(prompt);
 
   let text =
     result.response.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
@@ -276,7 +295,7 @@ Stay fully in character.
 User input: "${input}"
 `;
 
-    const result = await model.generateContent(prompt);
+    const result = await generateWithRetry(prompt);
 
     const responseText =
       result.response.candidates?.[0]?.content?.parts?.[0]?.text ||
@@ -379,55 +398,10 @@ app.post("/respond", async (req, res) => {
     const rawText =
       result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "{}";
 
-    // Remove markdown code blocks if present
-    const cleanedText = rawText
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
+    // Await TTS and return audio URL — Python orchestrates playback + mouth sync
+    const audioUrl = await textToSpeech(responseText);
 
-    let parsed;
-
-    try {
-      parsed = JSON.parse(cleanedText);
-    } catch (err) {
-      console.error("Failed to parse Gemini JSON:", rawText);
-      parsed = {
-        interest,
-        response: "Sorry, I got distracted for a second."
-      };
-    }
-
-
-    // Update interest safely
-    interest = Math.max(0, Math.min(10, parsed.interest));
-
-    const stats = loadDateStats();
-
-    stats.turnCount += 1;
-    stats.finalInterest = interest;
-    stats.highestInterest = Math.max(stats.highestInterest, interest);
-    stats.lowestInterest = Math.min(stats.lowestInterest, interest);
-    stats.averageInterest = Math.round((((stats.averageInterest * (stats.turnCount - 1)) + interest) / stats.turnCount) * 10) / 10;
-    if (interest === stats.highestInterest) {
-      stats.highlightMoment = userInput;
-    }
-
-    if (parsed.response.includes("?")) stats.followUpQuestions += 1;
-
-    saveDateStats(stats);
-
-    addTurn(userInput, parsed.response, interest);
-
-    // Send clean response
-    res.json({
-      response: parsed.response,
-      interest: interest
-    });
-
-    // TTS only speaks the response text
-    textToSpeech(parsed.response);
-    saveInterest(interest);
-
+    res.json({ response: responseText, audioUrl: audioUrl || null });
   } catch (err) {
     console.error("Error generating response:", err);
     res.status(500).json({ error: "Failed to generate response" });
@@ -435,7 +409,33 @@ app.post("/respond", async (req, res) => {
 });
 
 
+// List of premade voices
+const voiceIds = [
+  "hpp4J3VqNfWAUOO0d1Us",
+  "CwhRBWXzGAHq8TQ4Fs17",
+  "EXAVITQu4vr4xnSDxMaL",
+  "FGY2WhTYpPnrIDTdsKH5",
+  "IKne3meq5aSn9XLyUdCD",
+  "JBFqnCBsd6RMkjVDRZzb",
+  "N2lVS1w4EtoT3dr4eOWO",
+  "SAz9YHcvj6GT2YYXdXww",
+  "SOYHLrjzK2X1ezoPC6cr",
+  "TX3LPaxmHKxFdv7VOQHJ"
+];
 
+// Function to pick a random voice
+function setRandomVoice() {
+  const randomIndex = Math.floor(Math.random() * voiceIds.length);
+  const voiceId = voiceIds[randomIndex];
+  fs.writeFileSync("./voice.json", JSON.stringify({ voiceId }));
+}
+
+function ensureTmpDir() {
+  const tmpDir = "./tmp";
+  if (!fs.existsSync(tmpDir)) {
+    fs.mkdirSync(tmpDir, { recursive: true });
+  }
+}
 
 async function streamToBuffer(stream) {
   const chunks = [];
@@ -474,7 +474,7 @@ app.post("/tts", async (req, res) => {
   if (!text) return res.status(400).json({ error: "Missing text" });
 
   try {
-
+    ensureTmpDir();
     const voiceId = JSON.parse(fs.readFileSync("voice.json")).voiceId;
     const audioStream = await elevenlabs.textToSpeech.convert(
       voiceId,
@@ -487,10 +487,12 @@ app.post("/tts", async (req, res) => {
 
     const audioBuffer = await streamToBuffer(audioStream);
 
-    const tempFile = "./tmp/audio.mp3";
+    const timestamp = Date.now();
+    const tempFile = `./tmp/audio_${timestamp}.mp3`;
     fs.writeFileSync(tempFile, audioBuffer);
 
-    playOnRobot(`${AUDIO_HOST_URL}/tmp/audio.mp3`)
+    const audioUrl = `${AUDIO_HOST_URL}/tmp/audio_${timestamp}.mp3`;
+    res.json({ audioUrl });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "TTS failed" });
@@ -499,10 +501,9 @@ app.post("/tts", async (req, res) => {
 
 async function textToSpeech(text) {
   try {
-    console.log("Starting:", text)
-    const voiceId = loadVoice();
-    console.log("Load voice!", voiceId)
-    /*
+    console.log("Starting TTS:", text)
+    ensureTmpDir();
+    const voiceId = JSON.parse(fs.readFileSync("voice.json")).voiceId;
     const audioStream = await elevenlabs.textToSpeech.convert(
       voiceId,
       {
@@ -514,15 +515,19 @@ async function textToSpeech(text) {
 
     const audioBuffer = await streamToBuffer(audioStream);
 
-    const tempFile = "./tmp/audio.mp3";
+    // Use a timestamped filename to avoid caching issues
+    const timestamp = Date.now();
+    const tempFile = `./tmp/audio_${timestamp}.mp3`;
     fs.writeFileSync(tempFile, audioBuffer);
 
-    console.log("PLay")
+    const audioUrl = `${AUDIO_HOST_URL}/tmp/audio_${timestamp}.mp3`;
+    console.log("TTS ready:", audioUrl);
 
-    playOnRobot(`${AUDIO_HOST_URL}/tmp/audio.mp3`)
-    */
+    // Return the URL — caller decides whether to play on robot
+    return audioUrl;
   } catch (error) {
     console.error("TTS Error:", error.response?.data || error.message);
+    return null;
   }
 }
 
