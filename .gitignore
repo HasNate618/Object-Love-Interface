@@ -29,6 +29,9 @@ image_to_voice/node_modules
 image_to_voice/service-account.json
 image_to_voice/.env
 
+# WiFi credentials (user-specific)
+**/wifi_config.h
+
 
 
 # SolidWorks Temporary/Owner files (the ones created on open)

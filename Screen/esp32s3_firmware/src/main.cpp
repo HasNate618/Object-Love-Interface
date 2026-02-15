@@ -2,7 +2,9 @@
  * SenseCAP Indicator - Animated Face + Image Display + Touch
  * Main firmware for ESP32-S3
  *
- * Receives JSON commands over CH340 UART:
+ * Receives JSON commands over CH340 UART (Serial) and/or WiFi TCP socket.
+ * Responses and events are sent to BOTH serial and the TCP client (if connected).
+ * Binary JPEG data is read from whichever transport sent the image command.
  *
  *   Display modes (mutually exclusive):
  *     {"cmd":"face","on":true/false}          → animated face mode
@@ -22,6 +24,9 @@
  *   Hardware:
  *     {"cmd":"bl","on":true/false}            → backlight control
  *
+ *   WiFi info:
+ *     {"cmd":"wifi"}                          → returns IP/status
+ *
  * Emits asynchronous events:
  *     {"event":"touch","x":X,"y":Y}  → touch detected on screen
  *     {"event":"button_down"}         → physical button pressed (GPIO38)
@@ -36,6 +41,7 @@
 #include "pins.h"
 #include "face.h"
 #include "touch.h"
+#include "wifi_link.h"
 
 // ============================================================================
 // Constants
@@ -57,6 +63,35 @@ static unsigned long s_last_touch_event = 0;
 static uint8_t  *jpeg_buf   = NULL;   // Incoming JPEG data
 static uint16_t *decode_buf = NULL;   // Decoded 480x480 RGB565 frame
 static JPEGDEC   jpeg;
+
+// WiFi TCP server
+static WiFiLink wifi;
+static bool s_wifi_ok = false;
+
+// Track which transport sent the current command:
+//   0 = Serial (USB), 1 = WiFi TCP
+static int s_cmd_source = 0;
+
+// ============================================================================
+// Dual Output Helpers (Serial + WiFi)
+// ============================================================================
+
+static void dualPrintln(const char* str) {
+    Serial.println(str);
+    wifi.println(str);
+}
+
+static void dualPrintf(const char* fmt, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    Serial.write((const uint8_t*)buf, n);
+    if (wifi.connected && wifi.client.connected()) {
+        wifi.client.write((const uint8_t*)buf, n);
+    }
+}
 
 // ============================================================================
 // JPEG Decode Callback
@@ -115,44 +150,62 @@ static uint16_t hexToRGB565(const char *hex) {
 
 static void handleImage(uint32_t len) {
     if (len == 0 || len > MAX_JPEG_SIZE) {
-        Serial.printf("{\"status\":\"error\",\"msg\":\"bad len %u\"}\n", len);
+        dualPrintf("{\"status\":\"error\",\"msg\":\"bad len %u\"}\n", len);
         return;
     }
 
     // Signal ready
-    Serial.println("{\"status\":\"ready\"}");
+    dualPrintln("{\"status\":\"ready\"}");
     Serial.flush();
+    wifi.flush();
 
-    // Receive raw JPEG bytes
+    // Receive raw JPEG bytes from whichever transport sent the command
     uint32_t received = 0;
     unsigned long deadline = millis() + 30000;
-    while (received < len && millis() < deadline) {
-        int avail = Serial.available();
-        if (avail > 0) {
-            uint32_t want = len - received;
-            if ((uint32_t)avail < want) want = avail;
-            size_t got = Serial.readBytes(jpeg_buf + received, want);
-            received += got;
-            if (got > 0) deadline = millis() + 5000;
+
+    if (s_cmd_source == 1) {
+        // WiFi TCP source
+        while (received < len && millis() < deadline) {
+            int avail = wifi.availableBytes();
+            if (avail > 0) {
+                uint32_t want = len - received;
+                if ((uint32_t)avail < want) want = avail;
+                size_t got = wifi.readBytes(jpeg_buf + received, want);
+                received += got;
+                if (got > 0) deadline = millis() + 5000;
+            }
+            yield();
         }
-        yield();
+    } else {
+        // Serial USB source
+        while (received < len && millis() < deadline) {
+            int avail = Serial.available();
+            if (avail > 0) {
+                uint32_t want = len - received;
+                if ((uint32_t)avail < want) want = avail;
+                size_t got = Serial.readBytes(jpeg_buf + received, want);
+                received += got;
+                if (got > 0) deadline = millis() + 5000;
+            }
+            yield();
+        }
     }
 
     if (received != len) {
-        Serial.printf("{\"status\":\"error\",\"msg\":\"got %u/%u\"}\n", received, len);
+        dualPrintf("{\"status\":\"error\",\"msg\":\"got %u/%u\"}\n", received, len);
         return;
     }
 
     // Decode JPEG to RGB565
     if (!jpeg.openRAM(jpeg_buf, len, jpegDrawCB)) {
-        Serial.println("{\"status\":\"error\",\"msg\":\"jpeg open fail\"}");
+        dualPrintln("{\"status\":\"error\",\"msg\":\"jpeg open fail\"}");
         return;
     }
     jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
     memset(decode_buf, 0, FRAME_BYTES);
 
     if (!jpeg.decode(0, 0, 0)) {
-        Serial.println("{\"status\":\"error\",\"msg\":\"jpeg decode fail\"}");
+        dualPrintln("{\"status\":\"error\",\"msg\":\"jpeg decode fail\"}");
         jpeg.close();
         return;
     }
@@ -160,7 +213,7 @@ static void handleImage(uint32_t len) {
 
     // Push to display
     display_draw_fullscreen(decode_buf);
-    Serial.println("{\"status\":\"ok\"}");
+    dualPrintln("{\"status\":\"ok\"}");
 }
 
 // ============================================================================
@@ -170,13 +223,13 @@ static void handleImage(uint32_t len) {
 static void handleCommand(const char *line) {
     StaticJsonDocument<256> doc;
     if (deserializeJson(doc, line)) {
-        Serial.println("{\"status\":\"error\",\"msg\":\"bad json\"}");
+        dualPrintln("{\"status\":\"error\",\"msg\":\"bad json\"}");
         return;
     }
 
     const char *cmd = doc["cmd"];
     if (!cmd) {
-        Serial.println("{\"status\":\"error\",\"msg\":\"no cmd\"}");
+        dualPrintln("{\"status\":\"error\",\"msg\":\"no cmd\"}");
         return;
     }
 
@@ -186,45 +239,54 @@ static void handleCommand(const char *line) {
     }
     else if (strcmp(cmd, "clear") == 0) {
         display_fill(hexToRGB565(doc["color"] | "#000000"));
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "tone") == 0) {
         rp2040_tone(doc["freq"] | 1000, doc["dur"] | 200);
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "melody") == 0) {
         rp2040_melody(doc["notes"] | "");
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "stop") == 0) {
         rp2040_stop();
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "bl") == 0) {
         display_backlight(doc["on"] | true);
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
+    }
+    // ---- WiFi info ----
+    else if (strcmp(cmd, "wifi") == 0) {
+        if (s_wifi_ok) {
+            dualPrintf("{\"status\":\"ok\",\"ip\":\"%s\",\"port\":%d}\n",
+                       wifi.ipAddress().c_str(), TCP_PORT);
+        } else {
+            dualPrintln("{\"status\":\"ok\",\"ip\":\"none\",\"msg\":\"wifi not connected\"}");
+        }
     }
     // ---- Face mode commands ----
     else if (strcmp(cmd, "face") == 0) {
         bool on = doc["on"] | false;
         face_set_enabled(on);
         if (!on) display_fill(0x0000);  // Clear to black when leaving face mode
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "mouth") == 0) {
         face_set_mouth(doc["open"] | 0.0f);
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "love") == 0) {
         face_set_love(doc["value"] | 0.0f);
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else if (strcmp(cmd, "blink") == 0) {
         face_blink();
-        Serial.println("{\"status\":\"ok\"}");
+        dualPrintln("{\"status\":\"ok\"}");
     }
     else {
-        Serial.println("{\"status\":\"error\",\"msg\":\"unknown cmd\"}");
+        dualPrintln("{\"status\":\"error\",\"msg\":\"unknown cmd\"}");
     }
 }
 
@@ -241,6 +303,13 @@ void setup() {
     Serial1.begin(UART_RP2040_BAUD, SERIAL_8N1, PIN_UART_RP2040_RX, PIN_UART_RP2040_TX);
 
     Serial.println("{\"status\":\"booting\"}");
+
+    // Connect WiFi and start TCP server
+    s_wifi_ok = wifi.begin();
+    if (s_wifi_ok) {
+        Serial.printf("{\"status\":\"wifi\",\"ip\":\"%s\",\"port\":%d}\n",
+                      wifi.ipAddress().c_str(), TCP_PORT);
+    }
 
     // Allocate PSRAM buffers
     jpeg_buf   = (uint8_t  *)heap_caps_malloc(MAX_JPEG_SIZE, MALLOC_CAP_SPIRAM);
@@ -269,14 +338,30 @@ void setup() {
     }
     button_init();
 
-    Serial.println("{\"status\":\"ready\"}");
+    dualPrintln("{\"status\":\"ready\"}");
 }
 
 void loop() {
+    // --- Poll WiFi TCP server ---
+    if (s_wifi_ok) {
+        wifi.poll();
+    }
+
+    // --- Check USB serial ---
     if (Serial.available()) {
+        s_cmd_source = 0;
         String line = Serial.readStringUntil('\n');
         line.trim();
         if (line.length() > 0) {
+            handleCommand(line.c_str());
+        }
+    }
+
+    // --- Check WiFi TCP ---
+    if (s_wifi_ok && wifi.available()) {
+        String line = wifi.readLine();
+        if (line.length() > 0) {
+            s_cmd_source = 1;
             handleCommand(line.c_str());
         }
     }
@@ -288,17 +373,17 @@ void loop() {
     TouchPoint tp = touch_read();
     if (tp.touched && (now - s_last_touch_event) > TOUCH_COOLDOWN_MS) {
         s_last_touch_event = now;
-        Serial.printf("{\"event\":\"touch\",\"x\":%d,\"y\":%d}\n", tp.x, tp.y);
+        dualPrintf("{\"event\":\"touch\",\"x\":%d,\"y\":%d}\n", tp.x, tp.y);
         rp2040_tone(1500, 60);
     }
 
     // Poll physical user button (GPIO38) — emit down/up events
     int btn = button_edge();
     if (btn == 1) {
-        Serial.println("{\"event\":\"button_down\"}");
+        dualPrintln("{\"event\":\"button_down\"}");
         rp2040_tone(1000, 60);
     } else if (btn == -1) {
-        Serial.println("{\"event\":\"button_up\"}");
+        dualPrintln("{\"event\":\"button_up\"}");
         rp2040_tone(800, 40);
     }
 

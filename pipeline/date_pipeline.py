@@ -13,6 +13,7 @@ button (GPIO38), the pipeline:
 Usage:
     python pipeline/date_pipeline.py
     python pipeline/date_pipeline.py --port COM6 --camera 1
+    python pipeline/date_pipeline.py --wifi sensecap.local --camera 1
 
 Environment:
     Requires: opencv-python, Pillow, pyserial
@@ -270,6 +271,7 @@ def run_pipeline(
     on_capture=None,
     m5_url: str | None = None,
     server_url: str | None = None,
+    wifi_host: str | None = None,
 ):
     """
     Main pipeline loop.
@@ -280,13 +282,21 @@ def run_pipeline(
         on_capture:   Callback(frame_path: str) called after capture.
                       Pipeline waits for it to return before switching to face.
                       If None, just saves and switches immediately.
+        wifi_host:    If set, connect via WiFi TCP instead of serial.
+                      Can be IP address or mDNS hostname (e.g. "sensecap.local").
     """
     # --- Setup ---
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Connecting to SenseCAP on {port}...")
-    link = EventSerial(port)
-    link.drain_boot(1.5)
+    if wifi_host:
+        from wifi_link import WiFiLink
+        print(f"Connecting to SenseCAP via WiFi at {wifi_host}...")
+        link = WiFiLink(wifi_host)
+        link.drain_boot(1.5)
+    else:
+        print(f"Connecting to SenseCAP on {port}...")
+        link = EventSerial(port)
+        link.drain_boot(1.5)
 
     # Disable face mode to start streaming video
     print("Disabling face mode...")
@@ -461,6 +471,8 @@ def main():
         description="Webcam → SenseCAP Date Button → Face Mode Pipeline"
     )
     parser.add_argument("--port", default="COM6", help="SenseCAP serial port")
+    parser.add_argument("--wifi", default=None, metavar="HOST",
+                        help="Connect via WiFi TCP instead of serial (IP or hostname, e.g. sensecap.local)")
     parser.add_argument("--camera", type=int, default=-1,
                         help="Camera index (-1 = auto-detect)")
     parser.add_argument("--touch-anywhere", action="store_true",
@@ -475,6 +487,8 @@ def main():
     print("  Date Pipeline")
     print("=" * 50)
     print(f"  Serial port: {args.port}")
+    if args.wifi:
+        print(f"  WiFi host:   {args.wifi}")
     print(f"  Camera:      {'auto' if args.camera < 0 else args.camera}")
     print(f"  Server:      {args.server}")
     if os.environ.get("DATE_CAMERA_INDEX"):
@@ -492,6 +506,7 @@ def main():
         on_capture=capture_cb,
         m5_url=args.m5_url or None,
         server_url=args.server,
+        wifi_host=args.wifi,
     )
 
 
