@@ -314,9 +314,6 @@ def run_pipeline(
     restart_event = threading.Event()
 
     def request_restart(reason: str):
-        if not limit_switch_restart_cmd:
-            print(f"  [limit_switch] Restart requested ({reason}) but no command set")
-            return
         if restart_event.is_set():
             return
         restart_event.set()
@@ -652,8 +649,6 @@ def main():
     def capture_cb(path):
         return personality_on_capture(path, args.server)
 
-    restart_cmd = args.limit_switch_restart_cmd.strip() or None
-
     while True:
         run_result = run_pipeline(
             port=args.port,
@@ -666,15 +661,10 @@ def main():
             servo_port=args.servo_port,
             reset_gpio=args.reset_gpio,
             limit_switch_gpio=args.limit_switch_gpio,
-            limit_switch_restart_cmd=restart_cmd,
+            limit_switch_restart_cmd=None,
         )
-        if run_result == "reset":
+        if run_result in {"reset", "restart"}:
             continue
-        if run_result == "restart":
-            if restart_cmd:
-                print("  [limit_switch] Starting new pipeline process")
-                subprocess.Popen(shlex.split(restart_cmd), start_new_session=True)
-            break
         break
 
 
