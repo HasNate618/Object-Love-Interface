@@ -25,6 +25,9 @@ import sys
 import json
 import time
 import argparse
+import shlex
+import subprocess
+import threading
 from pathlib import Path
 
 import cv2
@@ -279,6 +282,7 @@ def run_pipeline(
     servo_port: str | None = None,
     reset_gpio: int | None = None,
     limit_switch_gpio: int | None = None,
+    limit_switch_restart_cmd: str | None = None,
 ):
     """
     Main pipeline loop.
@@ -307,14 +311,24 @@ def run_pipeline(
     def check_reset() -> bool:
         return bool(reset_button and reset_button.consume_reset())
 
+    restart_event = threading.Event()
+
+    def request_restart(reason: str):
+        if not limit_switch_restart_cmd:
+            print(f"  [limit_switch] Restart requested ({reason}) but no command set")
+            return
+        if restart_event.is_set():
+            return
+        restart_event.set()
+        print(f"  [limit_switch] Restart requested ({reason})")
+
     limit_switch = None
     if limit_switch_gpio is not None and limit_switch_gpio >= 0:
         try:
             from gpio_button import GpioLimitSwitch
             limit_switch = GpioLimitSwitch(
                 limit_switch_gpio,
-                on_close=lambda: print("  [limit_switch] >>> CLOSED — switch engaged"),
-                on_open=lambda: print("  [limit_switch] >>> OPEN — switch released"),
+                on_close=lambda: request_restart("closed"),
             )
             print(f"  [limit_switch] Async GPIO enabled on GPIO{limit_switch_gpio}")
         except Exception as e:
@@ -382,6 +396,16 @@ def run_pipeline(
 
     try:
         while True:
+            if restart_event.is_set():
+                print("  [limit_switch] Restarting pipeline")
+                cap.release()
+                link.close()
+                if reset_button:
+                    reset_button.close()
+                if limit_switch:
+                    limit_switch.close()
+                return "restart"
+
             if check_reset():
                 print("  [reset] GPIO reset requested — restarting pipeline")
                 cap.release()
@@ -390,7 +414,7 @@ def run_pipeline(
                     reset_button.close()
                 if limit_switch:
                     limit_switch.close()
-                return True
+                return "reset"
 
             # 1. Capture webcam frame
             ret, cv_frame = cap.read()
@@ -439,7 +463,7 @@ def run_pipeline(
             reset_button.close()
         if limit_switch:
             limit_switch.close()
-        return
+        return "exit"
 
     # --- Date Button Pressed ---
     cap.release()
@@ -597,6 +621,8 @@ def main():
                         help="GPIO pin for reset button (default: 17). Use -1 to disable.")
     parser.add_argument("--limit-switch-gpio", dest="limit_switch_gpio", type=int, default=-1,
                         help="GPIO pin for limit switch (default: -1 to disable). e.g., 17 for GPIO17.")
+    parser.add_argument("--limit-switch-restart-cmd", dest="limit_switch_restart_cmd", default="",
+                        help="Command to run when limit switch triggers a restart.")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -626,8 +652,10 @@ def main():
     def capture_cb(path):
         return personality_on_capture(path, args.server)
 
+    restart_cmd = args.limit_switch_restart_cmd.strip() or None
+
     while True:
-        reset_requested = run_pipeline(
+        run_result = run_pipeline(
             port=args.port,
             camera_index=camera_index,
             touch_anywhere=args.touch_anywhere,
@@ -638,9 +666,16 @@ def main():
             servo_port=args.servo_port,
             reset_gpio=args.reset_gpio,
             limit_switch_gpio=args.limit_switch_gpio,
+            limit_switch_restart_cmd=restart_cmd,
         )
-        if not reset_requested:
+        if run_result == "reset":
+            continue
+        if run_result == "restart":
+            if restart_cmd:
+                print("  [limit_switch] Starting new pipeline process")
+                subprocess.Popen(shlex.split(restart_cmd), start_new_session=True)
             break
+        break
 
 
 if __name__ == "__main__":
