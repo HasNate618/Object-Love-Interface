@@ -52,7 +52,7 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16  # 16-bit PCM
 
 # Mic device name pattern to auto-detect external webcam mic
-MIC_NAME_PATTERN = os.environ.get("MIC_NAME", "Brio")
+MIC_NAME_PATTERN = os.environ.get("MIC_NAME", "Wireless")
 
 
 # ============================================================================
@@ -115,14 +115,33 @@ class PushToTalkRecorder:
         self._frames = []
         self._recording = True
         self._pa = pyaudio.PyAudio()
-        self._stream = self._pa.open(
-            format=FORMAT,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=CHUNK,
-        )
+        try:
+            self._stream = self._pa.open(
+                format=FORMAT,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=CHUNK,
+            )
+        except OSError as e:
+            # Fallback to the device's default sample rate if the requested
+            # rate is not supported (common on some USB mics).
+            if self.device_index is not None:
+                info = self._pa.get_device_info_by_index(self.device_index)
+                fallback_rate = int(info.get("defaultSampleRate", self.sample_rate))
+            else:
+                fallback_rate = 44100
+            print(f"  [mic] Invalid sample rate {self.sample_rate}, retrying at {fallback_rate}")
+            self.sample_rate = fallback_rate
+            self._stream = self._pa.open(
+                format=FORMAT,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=CHUNK,
+            )
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
         self._thread.start()
 
@@ -242,14 +261,20 @@ def run_conversation(
     mic_device: int | None = None,
     server_url: str = "",
     m5_play_url: str = "",
+    servo=None,
+    reset_checker=None,
 ):
     """
     Push-to-talk conversation loop with lip-synced mouth animation.
 
     - Hold button → record from webcam mic
-    - Release button → STT → send to /respond → Gemini + TTS
+    - Release button → STT → send to /respond → Gemini response + TTS
     - Download audio → analyse amplitude → play on M5 + animate mouth
+    - Update love value on SenseCAP screen + servo angle
     - Repeat until Ctrl+C
+
+    Args:
+        servo: Optional ServoSerial instance for the arm ESP32.
     """
     recorder = PushToTalkRecorder(device_index=mic_device)
     recording = False
@@ -263,10 +288,31 @@ def run_conversation(
     print("  Press Ctrl+C to quit.\n")
 
     def _handle_response(result):
-        """Process AI response: play audio with mouth sync."""
+        """Process AI response: update love/servo, play audio with mouth sync."""
         nonlocal anim_thread
         response = result.get("response", "")
         audio_url = result.get("audioUrl")
+        interest = result.get("interest")
+
+        # --- Update love value on screen + servo angle ---
+        if interest is not None:
+            try:
+                love = interest / 10.0
+                love = max(0.0, min(1.0, love))
+                link.send_cmd({"cmd": "love", "value": love})
+                print(f"  [love] interest={interest} → love={love:.2f}")
+            except Exception as e:
+                print(f"  [love] Screen update failed: {e}")
+
+            if servo:
+                try:
+                    servo.set_interest(interest)
+                except Exception as e:
+                    print(f"  [servo] Update failed: {e}")
+            else:
+                print("  [servo] Skipping update (no servo configured)")
+        else:
+            print("  [love] Skipping update (no interest in response)")
 
         if response:
             print(f"  AI: {response[:120]}")
@@ -292,6 +338,9 @@ def run_conversation(
 
     try:
         while True:
+            if reset_checker and reset_checker():
+                print("  [reset] GPIO reset requested — exiting conversation loop")
+                return True
             events = link.collect_events()
             for ev in events:
                 if ev.get("event") == "button_down" and not recording:

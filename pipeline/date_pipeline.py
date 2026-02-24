@@ -25,6 +25,9 @@ import sys
 import json
 import time
 import argparse
+import shlex
+import subprocess
+import threading
 from pathlib import Path
 
 import cv2
@@ -276,6 +279,10 @@ def run_pipeline(
     m5_url: str | None = None,
     server_url: str | None = None,
     wifi_host: str | None = None,
+    servo_port: str | None = None,
+    reset_gpio: int | None = None,
+    limit_switch_gpio: int | None = None,
+    limit_switch_restart_cmd: str | None = None,
 ):
     """
     Main pipeline loop.
@@ -291,6 +298,38 @@ def run_pipeline(
     """
     # --- Setup ---
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    reset_button = None
+    if reset_gpio is not None and reset_gpio >= 0:
+        try:
+            from gpio_button import GpioResetButton
+            reset_button = GpioResetButton(reset_gpio)
+            print(f"  [reset] GPIO button enabled on GPIO{reset_gpio}")
+        except Exception as e:
+            print(f"  [reset] GPIO disabled: {e}")
+
+    def check_reset() -> bool:
+        return bool(reset_button and reset_button.consume_reset())
+
+    restart_event = threading.Event()
+
+    def request_restart(reason: str):
+        if restart_event.is_set():
+            return
+        restart_event.set()
+        print(f"  [limit_switch] Restart requested ({reason})")
+
+    limit_switch = None
+    if limit_switch_gpio is not None and limit_switch_gpio >= 0:
+        try:
+            from gpio_button import GpioLimitSwitch
+            limit_switch = GpioLimitSwitch(
+                limit_switch_gpio,
+                on_close=lambda: request_restart("closed"),
+            )
+            print(f"  [limit_switch] Async GPIO enabled on GPIO{limit_switch_gpio}")
+        except Exception as e:
+            print(f"  [limit_switch] GPIO disabled: {e}")
 
     if wifi_host:
         from wifi_link import WiFiLink
@@ -354,6 +393,26 @@ def run_pipeline(
 
     try:
         while True:
+            if restart_event.is_set():
+                print("  [limit_switch] Restarting pipeline")
+                cap.release()
+                link.close()
+                if reset_button:
+                    reset_button.close()
+                if limit_switch:
+                    limit_switch.close()
+                return "restart"
+
+            if check_reset():
+                print("  [reset] GPIO reset requested — restarting pipeline")
+                cap.release()
+                link.close()
+                if reset_button:
+                    reset_button.close()
+                if limit_switch:
+                    limit_switch.close()
+                return "reset"
+
             # 1. Capture webcam frame
             ret, cv_frame = cap.read()
             if not ret:
@@ -397,7 +456,11 @@ def run_pipeline(
         print("\nInterrupted by user.")
         cap.release()
         link.close()
-        return
+        if reset_button:
+            reset_button.close()
+        if limit_switch:
+            limit_switch.close()
+        return "exit"
 
     # --- Date Button Pressed ---
     cap.release()
@@ -428,6 +491,15 @@ def run_pipeline(
     link.send_cmd({"cmd": "face", "on": True})
     print("  Face mode active! \u2665")
 
+    # Set initial love value from personality response (interest starts at 5)
+    initial_interest = capture_result.get("interest", 0) if isinstance(capture_result, dict) else 0
+    initial_love = max(0.0, min(1.0, initial_interest / 10.0))
+    try:
+        link.send_cmd({"cmd": "love", "value": initial_love})
+        print(f"  [love] Initial interest={initial_interest} → love={initial_love:.2f}")
+    except Exception as e:
+        print(f"  [love] Initial screen update failed: {e}")
+
     # Play personality starter audio with mouth sync
     audio_url = capture_result.get("audioUrl") if isinstance(capture_result, dict) else None
     if audio_url:
@@ -442,6 +514,19 @@ def run_pipeline(
             print(f"  Mouth sync error: {e}")
 
     # Enter conversation loop if conversation module available
+    servo = None
+    try:
+        if servo_port:
+            from servo_serial import ServoSerial
+            servo = ServoSerial(servo_port)
+            # Explicitly reset servo angle to neutral position on startup
+            servo.send_servo(135)
+        else:
+            print("  [servo] Not configured (no --servo-port)")
+    except Exception as e:
+        print(f"  WARNING: Could not open servo on {servo_port}: {e}")
+        servo = None
+
     try:
         from conversation import run_conversation, find_mic_device, MIC_NAME_PATTERN
         mic_device = find_mic_device(MIC_NAME_PATTERN)
@@ -452,13 +537,33 @@ def run_pipeline(
         # Use passed m5_url or fall back to env vars
         final_m5_url = m5_url or os.environ.get("M5_PLAY_URL", os.environ.get("M5CORE2_URL", ""))
         final_server_url = server_url or "http://localhost:3000"
-        run_conversation(link, mic_device=mic_device, m5_play_url=final_m5_url, server_url=final_server_url)
+        reset_requested = run_conversation(
+            link,
+            mic_device=mic_device,
+            m5_play_url=final_m5_url,
+            server_url=final_server_url,
+            servo=servo,
+            reset_checker=check_reset,
+        )
+        if reset_requested:
+            if servo:
+                servo.close()
+            link.close()
+            if reset_button:
+                reset_button.close()
+            return True
     except ImportError:
         print("  conversation.py not available — skipping conversation loop.")
     except KeyboardInterrupt:
         print("\n  Done.")
 
+    if servo:
+        servo.close()
+    if reset_button:
+        reset_button.close()
+
     link.close()
+    return False
 
 
 # ============================================================================
@@ -507,6 +612,14 @@ def main():
                         help="Node.js image_to_voice server URL")
     parser.add_argument("--m5-url", dest="m5_url", default="",
                         help="M5Core1 play endpoint (e.g. http://IP:8082/play)")
+    parser.add_argument("--servo-port", dest="servo_port", default=None,
+                        help="Serial port for the ESP32 servo controller (e.g. /dev/ttyUSB0 or COM7)")
+    parser.add_argument("--reset-gpio", dest="reset_gpio", type=int, default=17,
+                        help="GPIO pin for reset button (default: 17). Use -1 to disable.")
+    parser.add_argument("--limit-switch-gpio", dest="limit_switch_gpio", type=int, default=-1,
+                        help="GPIO pin for limit switch (default: -1 to disable). e.g., 17 for GPIO17.")
+    parser.add_argument("--limit-switch-restart-cmd", dest="limit_switch_restart_cmd", default="",
+                        help="Command to run when limit switch triggers a restart.")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -536,15 +649,23 @@ def main():
     def capture_cb(path):
         return personality_on_capture(path, args.server)
 
-    run_pipeline(
-        port=args.port,
-        camera_index=camera_index,
-        touch_anywhere=args.touch_anywhere,
-        on_capture=capture_cb,
-        m5_url=args.m5_url or None,
-        server_url=args.server,
-        wifi_host=args.wifi,
-    )
+    while True:
+        run_result = run_pipeline(
+            port=args.port,
+            camera_index=camera_index,
+            touch_anywhere=args.touch_anywhere,
+            on_capture=capture_cb,
+            m5_url=args.m5_url or None,
+            server_url=args.server,
+            wifi_host=args.wifi,
+            servo_port=args.servo_port,
+            reset_gpio=args.reset_gpio,
+            limit_switch_gpio=args.limit_switch_gpio,
+            limit_switch_restart_cmd=None,
+        )
+        if run_result in {"reset", "restart"}:
+            continue
+        break
 
 
 if __name__ == "__main__":
